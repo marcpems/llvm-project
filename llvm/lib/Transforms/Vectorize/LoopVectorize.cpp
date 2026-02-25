@@ -7987,6 +7987,43 @@ VPHistogramRecipe *VPRecipeBuilder::tryToWidenHistogram(const HistogramInfo *HI,
   return new VPHistogramRecipe(Opcode, HGramOps, VPI->getDebugLoc());
 }
 
+// VPlan-based transformations might enable more possibilities to keep some
+// computation in first-lane-only form than legacy CM determined. This routine
+// is here to detect some cases (as well as some determined by the legacy CM).
+// In future, we should gradually expand the logic here and stop relying on
+// legacy CM to make this decision.
+static bool shouldKeepFirstLaneOnlyRegardlessOfCM(VPInstruction *VPI) {
+  if (is_contained({Instruction::SDiv, Instruction::UDiv, Instruction::SRem,
+                    Instruction::URem},
+                   VPI->getOpcode()))
+    return false;
+
+  // Avoid rewriting IV increment as that interferes with
+  // `removeRedundantCanonicalIVs`.
+  if (VPI->getOpcode() == Instruction::Add &&
+      any_of(VPI->operands(),
+             [&](auto *Op) { return isa<VPWidenInductionRecipe>(Op); }))
+    return false;
+
+  // X86/consecutive-ptr-uniform.ll crashes without this:
+  if (VPI->getOpcode() == Instruction::Load)
+    return false;
+
+  if (VPI->mayHaveSideEffects())
+    return false;
+
+  if (!all_of(VPI->users(), [&](auto *U) {
+        // TODO: This "ScalarCast" is bonkers...
+        if (VPI->isScalarCast() && isa<VPWidenGEPRecipe>(U))
+          return false;
+
+        return U->usesFirstLaneOnly(VPI);
+      }))
+    return false;
+
+  return true;
+}
+
 VPReplicateRecipe *VPRecipeBuilder::handleReplication(VPInstruction *VPI,
                                                       VFRange &Range) {
   auto *I = VPI->getUnderlyingInstr();
@@ -8045,9 +8082,15 @@ VPReplicateRecipe *VPRecipeBuilder::handleReplication(VPInstruction *VPI,
   assert((Range.Start.isScalar() || !IsUniform || !IsPredicated ||
           (Range.Start.isScalable() && isa<IntrinsicInst>(I))) &&
          "Should not predicate a uniform recipe");
-  auto *Recipe =
-      new VPReplicateRecipe(I, VPI->operandsWithoutMask(), IsUniform,
-                            BlockInMask, *VPI, *VPI, VPI->getDebugLoc());
+
+  if (!IsUniform && shouldKeepFirstLaneOnlyRegardlessOfCM(VPI)) {
+    BlockInMask = nullptr;
+  }
+
+  auto *Recipe = new VPReplicateRecipe(
+      I, VPI->operandsWithoutMask(),
+      IsUniform || shouldKeepFirstLaneOnlyRegardlessOfCM(VPI), BlockInMask,
+      *VPI, *VPI, VPI->getDebugLoc());
   return Recipe;
 }
 
@@ -8076,6 +8119,9 @@ VPRecipeBuilder::tryToCreateWidenNonPhiRecipe(VPSingleDefRecipe *R,
   assert(!is_contained({Instruction::Load, Instruction::Store},
                        VPI->getOpcode()) &&
          "Should have been handled prior to this!");
+
+  if (shouldKeepFirstLaneOnlyRegardlessOfCM(VPI))
+    return nullptr;
 
   if (!shouldWiden(Instr, Range))
     return nullptr;

@@ -491,6 +491,12 @@ struct VPlanTransforms {
                                          VPRecipeBuilder &RecipeBuilder,
                                          VPCostContext &CostCtx,
                                          LoopVectorizationLegality &Legal);
+  /// \p MemOps must be updated to contain ones that haven't been processed by
+  /// the pass.
+  static void multiversionForUnitStridedMemOps(
+      VPlan &Plan, VPCostContext &CostCtx, LoopVectorizationLegality &Legal,
+      VPRecipeBuilder &RecipeBuilder, VFRange &Range,
+      SmallVectorImpl<VPInstruction *> &MemOps);
 };
 
 /// A helper function that returns true if the given type is irregular. The
