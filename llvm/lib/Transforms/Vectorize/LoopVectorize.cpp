@@ -8262,12 +8262,16 @@ VPlanPtr LoopVectorizationPlanner::tryToBuildVPlanWithVPRecipes(
                            Range, RecipeBuilder, CostCtx, *CM.Legal);
 
   // Now process all other blocks and instructions.
-  for (VPBasicBlock *VPBB : VPBlockUtils::blocksOnly<VPBasicBlock>(RPOT)) {
+  for (VPBasicBlock *VPBB : VPBlockUtils::blocksOnly<VPBasicBlock>(
+           post_order<VPBlockShallowTraversalWrapper<VPBlockBase *>>(
+               HeaderVPBB))) {
     // Convert input VPInstructions to widened recipes.
-    for (VPRecipeBase &R : make_early_inc_range(
-             make_range(VPBB->getFirstNonPhi(), VPBB->end()))) {
+    for (VPRecipeBase &R :
+         make_early_inc_range(make_range(VPBB->rbegin(), VPBB->rend()))) {
       // Skip recipes that do not need transforming or have already been
       // transformed.
+      if (R.isPhi())
+        continue;
       if (isa<VPWidenCanonicalIVRecipe, VPBlendRecipe, VPReductionRecipe,
               VPReplicateRecipe, VPWidenLoadRecipe, VPWidenStoreRecipe,
               VPVectorPointerRecipe, VPVectorEndPointerRecipe,
