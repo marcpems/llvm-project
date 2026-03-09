@@ -284,13 +284,13 @@ gh = github.Github(auth=github.Auth.Token(args.token))
 llvm_org = gh.get_organization("llvm")
 llvm_repo = llvm_org.get_repo("llvm-project")
 
-if args.user:
-    if not args.user_token:
-        print("--user-token option required when --user is used")
-        sys.exit(1)
-    # Validate that this user is allowed to modify releases.
-    user = gh.get_user(args.user)
-    print("running with user {}, ignoring checks".format(args.user))
+# if args.user:
+#    if not args.user_token:
+#        print("--user-token option required when --user is used")
+#        sys.exit(1)
+#    # Validate that this user is allowed to modify releases.
+#    user = gh.get_user(args.user)
+#    print("running with user {}, ignoring checks".format(args.user))
 # elif args.command == "check-permissions":
 #    print("--user option required for check-permissions")
 #    sys.exit(1)
