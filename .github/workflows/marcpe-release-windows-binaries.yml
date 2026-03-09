@@ -1,4 +1,4 @@
-name: Release Binaries
+name: Release Binaries - Windows PDBs
 
 on:
   workflow_dispatch:
@@ -51,7 +51,7 @@ jobs:
   prepare:
     name: Prepare to build binaries
     runs-on: ${{ inputs.runs-on }}
-    if: github.repository_owner == 'llvm'
+    # if: github.repository_owner == 'llvm'
     outputs:
       release-version: ${{ steps.vars.outputs.release-version }}
       ref: ${{ steps.vars.outputs.ref }}
@@ -154,42 +154,15 @@ jobs:
 
         target="$RUNNER_OS-$RUNNER_ARCH"
 
-        # The macOS builds try to cross compile some libraries so we need to
-        # add extra CMake args to disable them.
-        # See https://github.com/llvm/llvm-project/issues/99767
-        if [ "$RUNNER_OS" = "macOS" ]; then
-          target_cmake_flags="$target_cmake_flags -DBOOTSTRAP_BOOTSTRAP_COMPILER_RT_ENABLE_IOS=OFF"
-          if [ "$RUNNER_ARCH" = "ARM64" ]; then
-            arches=arm64
-          fi
-          target_cmake_flags="$target_cmake_flags -DBOOTSTRAP_BOOTSTRAP_DARWIN_osx_ARCHS=$arches -DBOOTSTRAP_BOOTSTRAP_DARWIN_osx_BUILTIN_ARCHS=$arches"
-        fi
-
         if [ "$RUNNER_OS" = "Windows" ]; then
           # The build times out on Windows, so we need to disable LTO.
           target_cmake_flags="$target_cmake_flags -DLLVM_RELEASE_ENABLE_LTO=OFF"
         fi
 
         case "${{ inputs.runs-on }}" in
-          ubuntu-22.04* | windows-2022)
-            build_runs_on="depot-${{ inputs.runs-on }}-16"
-            test_runs_on=$build_runs_on
-            ;;
           windows-11-arm)
-            if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-              build_runs_on="${{ inputs.runs-on }}"
-            else
-              build_runs_on="windows-11-arm-16core"
-            fi
+            build_runs_on="windows-11-arm-16core"
             test_runs_on=$build_runs_on
-            ;;
-          macos-14)
-            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-              build_runs_on="${{ inputs.runs-on }}"
-            else
-              build_runs_on="depot-macos-14"
-            fi
-            test_runs_on="${{ inputs.runs-on }}"
             ;;
           *)
             test_runs_on="${{ inputs.runs-on }}"
@@ -220,7 +193,7 @@ jobs:
   build-release-package:
     name: "Build Release Package"
     needs: prepare
-    if: github.repository_owner == 'llvm'
+    #if: github.repository_owner == 'llvm'
     runs-on: ${{ needs.prepare.outputs.build-runs-on }}
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
@@ -260,25 +233,6 @@ jobs:
           build_prefix=/mnt/
         fi
         echo "build-prefix=$build_prefix" >> $GITHUB_OUTPUT
-
-    - name: Configure Linux/MacOS
-      id: build
-      if: runner.os != 'Windows'
-      shell: bash
-      run: |
-        # There were some issues on the ARM64 MacOS runners with trying to build x86 object,
-        # so we need to set some extra cmake flags to disable this.
-        cmake -G Ninja -S llvm -B ${{ steps.setup-stage.outputs.build-prefix }}/build \
-            ${{ needs.prepare.outputs.target-cmake-flags }} \
-            -C clang/cmake/caches/Release.cmake
-
-    - name: Build Linux/MacOS
-      if: runner.os != 'Windows'
-      shell: bash
-      run: |
-        ninja -v -C ${{ steps.setup-stage.outputs.build-prefix }}/build stage2-package
-        release_dir=`find ${{ steps.setup-stage.outputs.build-prefix }}/build -iname 'stage2-bins'`
-        mv $release_dir/${{ needs.prepare.outputs.release-binary-filename }} .
 
     - name: Build Windows
       id: build-windows
@@ -323,42 +277,3 @@ jobs:
           ${{ needs.prepare.outputs.release-binary-filename }}
           ${{ steps.build-windows.outputs.windows-installer-filename }}
 
-    - name: Run Tests
-      # These almost always fail so don't let them fail the build and prevent the uploads.
-      if : runner.os != 'Windows'
-      continue-on-error: true
-      run: |
-        ninja -C ${{ steps.setup-stage.outputs.build-prefix }}/build stage2-check-all
-
-  upload-release-binaries:
-    name: "Upload Release Binaries"
-    needs:
-      - prepare
-      - build-release-package
-    if: >-
-      github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write # For release uploads
-      id-token: write     # For artifact attestations
-      attestations: write # For artifact attestations
-
-    steps:
-      - name: Checkout Release Scripts
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          sparse-checkout: |
-            .github/workflows/upload-release-artifact
-            llvm/utils/release/github-upload-release.py
-            llvm/utils/git/requirements.txt
-          sparse-checkout-cone-mode: false
-
-      - name: Upload Artifacts
-        uses: ./.github/workflows/upload-release-artifact
-        with:
-          release-version: ${{ needs.prepare.outputs.release-version }}
-          artifact-id: ${{ needs.build-release-package.outputs.artifact-id }}
-          attestation-name: ${{ needs.prepare.outputs.attestation-name }}
-          digest: ${{ needs.build-release-package.outputs.digest }}
-          upload: ${{ needs.prepare.outputs.upload }}
-          user-token: ${{ secrets.RELEASE_TASKS_USER_TOKEN }}
