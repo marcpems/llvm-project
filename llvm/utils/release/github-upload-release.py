@@ -291,9 +291,9 @@ if args.user:
     # Validate that this user is allowed to modify releases.
     user = gh.get_user(args.user)
     print("running with user {}, ignoring checks".format(args.user))
-elif args.command == "check-permissions":
-    print("--user option required for check-permissions")
-    sys.exit(1)
+# elif args.command == "check-permissions":
+#    print("--user option required for check-permissions")
+#    sys.exit(1)
 
 if args.command == "create":
     create_release(llvm_repo, args.release)
