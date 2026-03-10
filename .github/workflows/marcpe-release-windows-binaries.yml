@@ -161,7 +161,8 @@ jobs:
 
         case "${{ inputs.runs-on }}" in
           windows-11-arm)
-            build_runs_on="windows-11-arm-16core"
+            # build_runs_on="windows-11-arm-16core"
+            build_runs_on="windows-11-arm"
             test_runs_on=$build_runs_on
             ;;
           *)
