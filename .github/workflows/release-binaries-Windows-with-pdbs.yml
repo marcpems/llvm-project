@@ -57,7 +57,7 @@ jobs:
           echo "release-version=$release_version" >> "$GITHUB_OUTPUT"
           echo "upload=$upload" >> "$GITHUB_OUTPUT"
 
-  release-binaries-Windows-with-pdbs:
+  release-binaries-windows-with-pdbs:
     name: Build Release Binaries with PDBS for Windows
     needs:
       - setup-variables
@@ -72,7 +72,7 @@ jobs:
           - windows-2022
           - windows-11-arm
 
-    uses: ./.github/workflows/release-binaries-with-pdbs.yml
+    uses: ./.github/workflows/marcpe-release-windows-binaries.yml
     with:
       release-version: "${{ needs.setup-variables.outputs.release-version }}"
       upload: ${{ needs.setup-variables.outputs.upload == 'true'}}
