@@ -1,4 +1,4 @@
-name: Release Binaries - Windows PDBs
+name: Release Binaries build - limited to Windows
 
 on:
   workflow_dispatch:

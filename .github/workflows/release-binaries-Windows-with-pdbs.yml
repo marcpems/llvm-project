@@ -1,4 +1,4 @@
-name: Release Binaries for Windows and include PDBs
+name: Build ALL Release Binaries for Windows
 
 permissions:
   contents: read # Default everything to read-only
