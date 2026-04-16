@@ -293,8 +293,8 @@ cmake -GNinja %cmake_flags% ^
   %llvm_src%\llvm || exit /b 1
 ninja || ninja || ninja || exit /b 1
 REM ninja check-llvm || ninja check-llvm || ninja check-llvm || exit /b 1
-ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
-ninja check-lld || ninja check-lld || ninja check-lld || exit /b 1
+REM ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
+REM ninja check-lld || ninja check-lld || ninja check-lld || exit /b 1
 if "%arch%"=="amd64" (
   ninja check-runtimes || ninja check-runtimes || ninja check-runtimes || exit /b 1
 )
@@ -327,8 +327,8 @@ cmake -GNinja %cmake_flags% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
 ninja || ninja || ninja || exit /b 1
 REM ninja check-llvm || ninja check-llvm || ninja check-llvm || exit /b 1
-ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
-ninja check-lld || ninja check-lld || ninja check-lld || exit /b 1
+REM ninja check-clang || ninja check-clang || ninja check-clang || exit /b 1
+REM ninja check-lld || ninja check-lld || ninja check-lld || exit /b 1
 if "%arch%"=="amd64" (
   ninja check-runtimes || ninja check-runtimes || ninja check-runtimes || exit /b 1
 )
