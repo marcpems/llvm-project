@@ -4,8 +4,6 @@ permissions:
   contents: read # Default everything to read-only
 
 on:
-  schedule:
-    - cron: "0 0 * * 6"
   workflow_dispatch:
     inputs:
       release-version:
