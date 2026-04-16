@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       release-version:
-        description: 'Release Version'
-        required: true
+        description: 'LLVM Release Version (e.g. 21.1.8). If provided, checks out tag llvmorg-{version}. If empty, builds from build-ref or the selected branch.'
+        required: false
+        type: string
+      build-ref:
+        description: 'Git ref to build from (branch, tag, or SHA, e.g. release/21.x). Overrides the tag derived from release-version.'
+        required: false
         type: string
       upload:
         description: 'Upload binaries to the release page'
@@ -19,8 +23,12 @@ on:
   workflow_call:
     inputs:
       release-version:
-        description: 'Release Version'
-        required: true
+        description: 'LLVM Release Version (e.g. 21.1.8). If provided, checks out tag llvmorg-{version}. If empty, builds from build-ref or the selected branch.'
+        required: false
+        type: string
+      build-ref:
+        description: 'Git ref to build from (branch, tag, or SHA, e.g. release/21.x). Overrides the tag derived from release-version.'
+        required: false
         type: string
       upload:
         description: 'Upload binaries to the release page'
@@ -43,6 +51,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       release-version: ${{ steps.vars.outputs.release-version }}
+      build-ref: ${{ steps.vars.outputs.build-ref }}
       upload: ${{ steps.vars.outputs.upload }}
     steps:
       - shell: bash
@@ -50,11 +59,14 @@ jobs:
         run: |
           upload="${{ inputs.upload }}"
           release_version="${{ inputs.release-version }}"
+          build_ref="${{ inputs.build-ref }}"
           if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "schedule" ]; then
             upload="false"
             release_version=""
+            build_ref=""
           fi
           echo "release-version=$release_version" >> "$GITHUB_OUTPUT"
+          echo "build-ref=$build_ref" >> "$GITHUB_OUTPUT"
           echo "upload=$upload" >> "$GITHUB_OUTPUT"
 
   release-binaries-windows-with-pdbs:
@@ -75,6 +87,7 @@ jobs:
     uses: ./.github/workflows/marcpe-release-windows-binaries.yml
     with:
       release-version: "${{ needs.setup-variables.outputs.release-version }}"
+      build-ref: "${{ needs.setup-variables.outputs.build-ref }}"
       upload: ${{ needs.setup-variables.outputs.upload == 'true'}}
       runs-on: "${{ matrix.runs-on }}"
     secrets:
