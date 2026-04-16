@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       release-version:
-        description: 'Release Version'
+        description: 'LLVM Release Version (e.g. 21.1.8). If provided, checks out tag llvmorg-{version}.'
+        required: false
+        type: string
+      build-ref:
+        description: 'Git ref to build from (branch, tag, or SHA, e.g. release/21.x). Overrides release-version tag.'
         required: false
         type: string
       upload:
@@ -16,17 +20,18 @@ on:
         description: "Runner to use for the build"
         required: true
         type: choice
-        # We use ubuntu-22.04 rather than the latest version to make the built
-        # binaries more portable (eg functional aginast older glibc).
         options:
-          - ubuntu-22.04
-          - ubuntu-22.04-arm
-          - macos-14
+          - windows-2022
+          - windows-11-arm
 
   workflow_call:
     inputs:
       release-version:
-        description: 'Release Version'
+        description: 'LLVM Release Version (e.g. 21.1.8). If provided, checks out tag llvmorg-{version}.'
+        required: false
+        type: string
+      build-ref:
+        description: 'Git ref to build from (branch, tag, or SHA, e.g. release/21.x). Overrides release-version tag.'
         required: false
         type: string
       upload:
@@ -115,8 +120,19 @@ jobs:
       # | X.Y.Z-rcN | -rc N -test-asserts
       # | X.Y.Z     | -final
       run: |
+        build_ref="${{ inputs.build-ref }}"
         trimmed=$(echo ${{ inputs.release-version }} | xargs)
-        if [ -n "$trimmed" ]; then
+        if [ -n "$build_ref" ]; then
+          # Explicit ref provided — use it directly.
+          ref="$build_ref"
+          if [ -n "$trimmed" ]; then
+            release_version="$trimmed"
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            release_version="$LLVM_VERSION_FROM_SOURCE"
+          else
+            release_version="${{ (github.event_name == 'pull_request' && format('PR{0}', github.event.pull_request.number)) || 'CI'}}-$GITHUB_SHA"
+          fi
+        elif [ -n "$trimmed" ]; then
           release_version="$trimmed"
           ref="llvmorg-$release_version"
         else
