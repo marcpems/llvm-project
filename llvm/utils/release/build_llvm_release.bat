@@ -356,6 +356,7 @@ cd build_%arch%
 call :do_generate_profile || exit /b 1
 cmake -GNinja %cmake_flags% ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
+  -DLLVM_ENABLE_LTO=Thin ^
   %common_lldb_flags% ^
   -DPYTHON_HOME=%PYTHONHOME% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
@@ -498,18 +499,23 @@ cmake -GNinja %cmake_flags% -DLLVM_TARGETS_TO_BUILD=Native ^
 ninja clang || ninja clang || ninja clang || exit /b 1
 set instrumented_clang=%cd:\=/%/bin/clang-cl.exe
 cd ..
-REM Use that to build part of llvm to generate a profile.
+REM Build LLVMSupport with the instrumented clang to generate a broad profile.
+REM This mirrors the Linux perf-training approach (llvm-support/build.test)
+REM and exercises the compiler across many translation units and code paths,
+REM rather than compiling a single file (Sema.cpp).
 mkdir train
 cd train
-cmake -GNinja %cmake_flags% ^
+cmake -GNinja ^
+  -DCMAKE_BUILD_TYPE=Release ^
   -DCMAKE_C_COMPILER=%instrumented_clang% ^
   -DCMAKE_CXX_COMPILER=%instrumented_clang% ^
-  -DLLVM_ENABLE_PROJECTS=clang ^
   -DLLVM_TARGETS_TO_BUILD=Native ^
+  -DLLVM_ENABLE_PROJECTS="" ^
+  -DLLVM_ENABLE_RUNTIMES="" ^
   %llvm_src%\llvm || exit /b 1
 REM Drop profiles generated from running cmake; those are not representative.
 del ..\instrument\profiles\*.profraw
-ninja tools/clang/lib/Sema/CMakeFiles/obj.clangSema.dir/Sema.cpp.obj
+ninja LLVMSupport || exit /b 1
 cd ..
 set profile=%cd:\=/%/profile.profdata
 %stage0_bin_dir%\llvm-profdata merge -output=%profile% instrument\profiles\*.profraw || exit /b 1
