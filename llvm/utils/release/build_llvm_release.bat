@@ -401,8 +401,10 @@ set python_dir=%1
 
 REM Set Python environment
 if "%local-python%" == "true" (
-  FOR /F "delims=" %%i IN ('where python.exe ^| head -1') DO set python_exe=%%i
-  set PYTHONHOME=!python_exe:~0,-11!
+  set python_exe=
+  FOR /F "delims=" %%i IN ('where python.exe') DO if not defined python_exe set python_exe=%%i
+  for %%p in ("!python_exe!") do set PYTHONHOME=%%~dpp
+  if "!PYTHONHOME:~-1!" == "\" set PYTHONHOME=!PYTHONHOME:~0,-1!
 ) else (
   %python_dir%/python.exe --version || exit /b 1
   set PYTHONHOME=%python_dir%
