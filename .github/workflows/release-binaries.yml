@@ -27,6 +27,11 @@ on:
           # release-binaries-all.yml matrix. Revert before any upstream PR.
           - windows-11-arm
           - windows-2022
+          # TEMP (fork validation only): route the build to a self-hosted
+          # Windows ARM64 runner (labels: self-hosted, windows, ARM64),
+          # bypassing the GitHub-hosted windows-11-arm runner/timeout.
+          # Revert before any upstream PR.
+          - windows-arm64-self-hosted
 
   workflow_call:
     inputs:
@@ -58,7 +63,10 @@ permissions:
 jobs:
   prepare:
     name: Prepare to build binaries
-    runs-on: ${{ inputs.runs-on }}
+    # TEMP (fork validation only): route to the self-hosted Windows ARM64
+    # runner when explicitly requested via inputs.runs-on. Revert before any
+    # upstream PR.
+    runs-on: ${{ inputs.runs-on == 'windows-arm64-self-hosted' && fromJSON('["self-hosted","windows","ARM64"]') || inputs.runs-on }}
     if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'
     outputs:
       release-version: ${{ steps.vars.outputs.release-version }}
@@ -186,6 +194,16 @@ jobs:
             fi
             test_runs_on=$build_runs_on
             ;;
+          windows-arm64-self-hosted)
+            # TEMP (fork validation only): route to the self-hosted Windows
+            # ARM64 runner (labels: self-hosted, windows, ARM64) instead of
+            # the GitHub-hosted windows-11-arm runner. build-runs-on carries
+            # a JSON array literal here; the consuming jobs' `runs-on` use
+            # fromJSON() to turn it back into a label list. Revert before
+            # any upstream PR.
+            build_runs_on='["self-hosted","windows","ARM64"]'
+            test_runs_on=$build_runs_on
+            ;;
           macos-14)
             # TEMP (fork validation only): this fork has no Depot runners
             # registered, so keep using the plain GitHub-hosted label.
@@ -227,7 +245,12 @@ jobs:
     name: "Build Release Package"
     needs: prepare
     if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'
-    runs-on: ${{ needs.prepare.outputs.build-runs-on }}
+    # TEMP (fork validation only): needs.prepare.outputs.build-runs-on carries
+    # a JSON array literal (e.g. '["self-hosted","windows","ARM64"]') when
+    # routing to the self-hosted runner; fromJSON() converts it back into a
+    # label list, otherwise it is used as a plain runner-label string.
+    # Revert before any upstream PR.
+    runs-on: ${{ startsWith(needs.prepare.outputs.build-runs-on, '[') && fromJSON(needs.prepare.outputs.build-runs-on) || needs.prepare.outputs.build-runs-on }}
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
       artifact-id: ${{ steps.artifact-upload.outputs.artifact-id }}
