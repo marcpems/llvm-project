@@ -269,6 +269,19 @@ jobs:
       run: |
         echo "LIB=$env:LIB;C:\hostedtoolcache\windows\Python\3.14.6\$($env:RUNNER_ARCH.ToLower())\libs" >> $env:GITHUB_ENV
 
+    # TEMP (fork validation only): the tool-cache Python installed by
+    # setup-python on Windows only ships python.exe, not python3.exe. CMake's
+    # find_package(Python3) called by some nested sub-builds (eg the
+    # runtimes-configure step) looks for python3.exe specifically and fails
+    # with "Cannot run the interpreter" when it's missing. This step
+    # recreates the alias every run, since the tool-cache directory is
+    # re-provisioned per job and any manual fix on the runner doesn't
+    # persist. Revert before any upstream PR.
+    - name: Create python3.exe alias
+      if: runner.os == 'Windows'
+      run: |
+        Copy-Item "$env:pythonLocation\python.exe" "$env:pythonLocation\python3.exe" -Force
+
     - name: Setup crlf
       if: runner.os == 'Windows'
       run: |
