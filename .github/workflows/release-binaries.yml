@@ -22,6 +22,11 @@ on:
           - ubuntu-22.04
           - ubuntu-22.04-arm
           - macos-14
+          # TEMP (fork validation only): allow direct dispatch of the
+          # windows-11-arm/windows-2022 jobs without going through the
+          # release-binaries-all.yml matrix. Revert before any upstream PR.
+          - windows-11-arm
+          - windows-2022
 
   workflow_call:
     inputs:
