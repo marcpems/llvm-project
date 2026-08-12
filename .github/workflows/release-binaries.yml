@@ -323,27 +323,30 @@ jobs:
         INPUTS_RUNS_ON: ${{ inputs.runs-on }}
         LLVM_VERSION: ${{ needs.prepare.outputs.release-version }}
       run: |
-        # TEMP (fork validation only): the top-level build uses --local-python,
-        # which points CMake at whatever python.exe is found on PATH via an
-        # explicit -DPython3_ROOT_DIR override, and that works fine. However,
-        # the nested "runtimes-configure" sub-build (compiler-rt/openmp) runs
-        # a fresh CMake configure that does not inherit that override; it
-        # instead relies on the Python3_ROOT_DIR environment variable that
-        # actions/setup-python points at the tool-cache Python
-        # ($env:pythonLocation), which may be missing/broken/incomplete on
-        # this self-hosted runner. Mirror the known-good PATH python into
-        # that tool-cache location so both lookup paths succeed. Revert
-        # before any upstream PR.
-        $workingPython = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
-        if ($workingPython -and $env:pythonLocation) {
-          $destPython3Exe = Join-Path $env:pythonLocation "python3.exe"
-          if (-not (Test-Path $destPython3Exe)) {
-            try {
-              Copy-Item $workingPython $destPython3Exe -Force -ErrorAction Stop
-            } catch {
-              Write-Warning "Could not create python3.exe alias at '$destPython3Exe': $_"
-            }
-          }
+        # TEMP (fork validation only): actions/setup-python installs a Python
+        # into an ephemeral tool-cache dir ($env:pythonLocation) and prepends
+        # it to PATH, while this self-hosted runner also has its own Python
+        # install earlier on PATH. Having two python.exe candidates visible
+        # at once makes CMake's FindPython3 search non-deterministic: the
+        # top-level build's --local-python (a PATH-based `where python.exe`
+        # search) and the nested "runtimes-configure" sub-build's CMake
+        # configure (which relies on the Python3_ROOT_DIR env var set by
+        # actions/setup-python, pointing at the tool-cache) can end up
+        # picking different/inconsistent interpreters between runs, and the
+        # tool-cache one is sometimes missing/broken on this runner. Remove
+        # the tool-cache Python from PATH and repoint Python3_ROOT_DIR at the
+        # runner's own known-good Python so there is exactly one unambiguous
+        # candidate for both lookup paths. Revert before any upstream PR.
+        $systemPython = (Get-Command python.exe -ErrorAction SilentlyContinue |
+          Where-Object { -not $env:pythonLocation -or ($_.Source -notlike "$($env:pythonLocation)*") } |
+          Select-Object -First 1).Source
+        if ($systemPython -and $env:pythonLocation) {
+          $systemPythonDir = Split-Path $systemPython
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -notlike "$($env:pythonLocation)*") }) -join ';'
+          $env:Python3_ROOT_DIR = $systemPythonDir
+          Write-Host "Using system Python at '$systemPython'; removed tool-cache Python from PATH and set Python3_ROOT_DIR='$systemPythonDir'"
+        } else {
+          Write-Warning "Could not find a system python.exe outside of pythonLocation; leaving PATH/Python3_ROOT_DIR untouched."
         }
 
         subst S: ${{ github.workspace }}
