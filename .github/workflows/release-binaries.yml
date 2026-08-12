@@ -337,7 +337,10 @@ jobs:
         # the tool-cache Python from PATH and repoint Python3_ROOT_DIR at the
         # runner's own known-good Python so there is exactly one unambiguous
         # candidate for both lookup paths. Revert before any upstream PR.
-        $systemPython = (Get-Command python.exe -ErrorAction SilentlyContinue |
+        # NOTE: Get-Command without -All only returns the first PATH match,
+        # so it must be used here or every candidate but the tool-cache one
+        # gets silently dropped before the Where-Object filter even runs.
+        $systemPython = (Get-Command python.exe -All -ErrorAction SilentlyContinue |
           Where-Object { -not $env:pythonLocation -or ($_.Source -notlike "$($env:pythonLocation)*") } |
           Select-Object -First 1).Source
         if ($systemPython -and $env:pythonLocation) {
