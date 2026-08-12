@@ -269,19 +269,6 @@ jobs:
       run: |
         echo "LIB=$env:LIB;C:\hostedtoolcache\windows\Python\3.14.6\$($env:RUNNER_ARCH.ToLower())\libs" >> $env:GITHUB_ENV
 
-    # TEMP (fork validation only): the tool-cache Python installed by
-    # setup-python on Windows only ships python.exe, not python3.exe. CMake's
-    # find_package(Python3) called by some nested sub-builds (eg the
-    # runtimes-configure step) looks for python3.exe specifically and fails
-    # with "Cannot run the interpreter" when it's missing. This step
-    # recreates the alias every run, since the tool-cache directory is
-    # re-provisioned per job and any manual fix on the runner doesn't
-    # persist. Revert before any upstream PR.
-    - name: Create python3.exe alias
-      if: runner.os == 'Windows'
-      run: |
-        Copy-Item "$env:pythonLocation\python.exe" "$env:pythonLocation\python3.exe" -Force
-
     - name: Setup crlf
       if: runner.os == 'Windows'
       run: |
@@ -336,6 +323,26 @@ jobs:
         INPUTS_RUNS_ON: ${{ inputs.runs-on }}
         LLVM_VERSION: ${{ needs.prepare.outputs.release-version }}
       run: |
+        # TEMP (fork validation only): the top-level build uses --local-python,
+        # which points CMake at whatever python.exe is found on PATH via an
+        # explicit -DPython3_ROOT_DIR override, and that works fine. However,
+        # the nested "runtimes-configure" sub-build (compiler-rt/openmp) runs
+        # a fresh CMake configure that does not inherit that override; it
+        # instead relies on the Python3_ROOT_DIR environment variable that
+        # actions/setup-python points at the tool-cache Python
+        # ($env:pythonLocation), which may be missing/broken/incomplete on
+        # this self-hosted runner. Mirror the known-good PATH python into
+        # that tool-cache location so both lookup paths succeed. Revert
+        # before any upstream PR.
+        $workingPython = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+        if ($workingPython -and $env:pythonLocation) {
+          if (-not (Test-Path $env:pythonLocation)) {
+            New-Item -ItemType Directory -Path $env:pythonLocation -Force | Out-Null
+          }
+          Copy-Item $workingPython (Join-Path $env:pythonLocation "python.exe") -Force
+          Copy-Item $workingPython (Join-Path $env:pythonLocation "python3.exe") -Force
+        }
+
         subst S: ${{ github.workspace }}
         cd S:\llvm\utils\release\
         .\build_llvm_release.bat "--$($env:RUNNER_ARCH.ToLower())" --version $env:LLVM_VERSION --local-python --skip-checkout
