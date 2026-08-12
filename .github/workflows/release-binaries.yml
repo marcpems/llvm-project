@@ -339,8 +339,14 @@ jobs:
           if (-not (Test-Path $env:pythonLocation)) {
             New-Item -ItemType Directory -Path $env:pythonLocation -Force | Out-Null
           }
-          Copy-Item $workingPython (Join-Path $env:pythonLocation "python.exe") -Force
-          Copy-Item $workingPython (Join-Path $env:pythonLocation "python3.exe") -Force
+          $destPythonExe = Join-Path $env:pythonLocation "python.exe"
+          $destPython3Exe = Join-Path $env:pythonLocation "python3.exe"
+          if ((Resolve-Path $workingPython).Path -ne (Resolve-Path -ErrorAction SilentlyContinue $destPythonExe).Path) {
+            Copy-Item $workingPython $destPythonExe -Force
+          }
+          if (-not (Test-Path $destPython3Exe) -or (Resolve-Path $workingPython).Path -ne (Resolve-Path -ErrorAction SilentlyContinue $destPython3Exe).Path) {
+            Copy-Item $workingPython $destPython3Exe -Force
+          }
         }
 
         subst S: ${{ github.workspace }}
