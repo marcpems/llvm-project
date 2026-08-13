@@ -355,7 +355,10 @@ jobs:
         subst S: ${{ github.workspace }}
         cd S:\llvm\utils\release\
         .\build_llvm_release.bat "--$($env:RUNNER_ARCH.ToLower())" --version $env:LLVM_VERSION --local-python --skip-checkout
-        if ($env:INPUTS_RUNS_ON -eq "windows-11-arm") {
+        if ($env:INPUTS_RUNS_ON -eq "windows-11-arm" -or $env:INPUTS_RUNS_ON -eq "windows-arm64-self-hosted") {
+          # TEMP (fork validation only): the self-hosted ARM64 runner has no
+          # system-wide zstd either, so reuse the same built zstd.exe binary
+          # as the windows-11-arm case. Revert before any upstream PR.
           $zstd = (Get-ChildItem -Recurse -Filter "zstd.exe" | Select-Object -First 1).fullName
           mv $zstd $env:GITHUB_WORKSPACE
         }
@@ -385,7 +388,7 @@ jobs:
       env:
         RELEASE_BINARY_FILENAME: ${{ needs.prepare.outputs.release-binary-filename }}
         RELEASE_BINARY_FILENAME_ZSTD: ${{ needs.prepare.outputs.release-binary-filename-zstd }}
-        ZSTD: ${{ inputs.runs-on == 'windows-11-arm' && './zstd.exe' || 'zstd' }}
+        ZSTD: ${{ (inputs.runs-on == 'windows-11-arm' || inputs.runs-on == 'windows-arm64-self-hosted') && './zstd.exe' || 'zstd' }}
       run: |
         xz -dc "$RELEASE_BINARY_FILENAME" | "$ZSTD" --ultra -22 -T0 -o "$RELEASE_BINARY_FILENAME_ZSTD"
 
