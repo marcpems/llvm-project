@@ -10,7 +10,7 @@ goto begin
 echo Script for building the LLVM installer on Windows,
 echo used for the releases at https://github.com/llvm/llvm-project/releases
 echo.
-echo Usage: build_llvm_release.bat --version ^<version^> [--x86,--x64, --arm64] [--skip-checkout] [--local-python] [--force-msvc]
+echo Usage: build_llvm_release.bat --version ^<version^> [--x86,--x64, --arm64] [--skip-checkout] [--local-python] [--force-msvc] [--enable-pgo] [--enable-thinlto]
 echo.
 echo Options:
 echo --version: [required] version to build
@@ -21,6 +21,8 @@ echo --arm64: build and test arm64 variant
 echo --skip-checkout: use local git checkout instead of downloading src.zip
 echo --local-python: use installed Python and does not try to use a specific version (3.11)
 echo --force-msvc: use MSVC compiler for stage0, even if clang-cl is present
+echo --enable-pgo: build an instrumented stage1 clang, train it, and use the resulting profile for stage2 (64-bit builds only)
+echo --enable-thinlto: build stage2 with ThinLTO (64-bit builds only)
 echo.
 echo Note: At least one variant to build is required.
 echo.
@@ -40,6 +42,8 @@ set arm64=
 set skip-checkout=
 set local-python=
 set force-msvc=
+set enable-pgo=
+set enable-thinlto=
 call :parse_args %*
 
 if "%help%" NEQ "" goto usage
@@ -353,10 +357,12 @@ set cmake_flags=%all_cmake_flags:\=/%
 
 mkdir build_%arch%
 cd build_%arch%
-call :do_generate_profile || exit /b 1
+if "%enable-pgo%" == "true" call :do_generate_profile || exit /b 1
+set lto_cmake_flag=
+if "%enable-thinlto%" == "true" set lto_cmake_flag=-DLLVM_ENABLE_LTO=Thin
 cmake -GNinja %cmake_flags% ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
-  -DLLVM_ENABLE_LTO=Thin ^
+  %lto_cmake_flag% ^
   %common_lldb_flags% ^
   -DPYTHON_HOME=%PYTHONHOME% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
