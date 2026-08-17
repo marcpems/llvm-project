@@ -469,7 +469,7 @@ jobs:
         }
     
     - name: Dump Wix logs
-      if: runner.os == 'Windows'
+      if: always() && runner.os == 'Windows'
       continue-on-error: true
       env:
         LLVM_VERSION: ${{ needs.prepare.outputs.release-version }}
