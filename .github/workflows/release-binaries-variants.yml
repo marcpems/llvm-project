@@ -22,6 +22,11 @@ on:
           - pgo-only
           - thinlto-only
           - pgo-and-thinlto
+      enable-pdb:
+        description: "Windows: generate PDB debug info files and upload them as an additional artifact"
+        required: true
+        default: false
+        type: boolean
       runs-on:
         description: "Runner to use for the build"
         required: true
@@ -59,6 +64,11 @@ on:
         required: false
         default: neither
         type: string
+      enable-pdb:
+        description: "Windows: generate PDB debug info files and upload them as an additional artifact"
+        required: false
+        default: false
+        type: boolean
       runs-on:
         description: "Runner to use for the build"
         required: true
@@ -97,6 +107,7 @@ jobs:
       attestation-name: ${{ steps.vars.outputs.attestation-name }}
       windows-enable-pgo: ${{ steps.vars.outputs.windows-enable-pgo }}
       windows-enable-thinlto: ${{ steps.vars.outputs.windows-enable-thinlto }}
+      windows-enable-pdb: ${{ steps.vars.outputs.windows-enable-pdb }}
 
     steps:
     - name: Checkout LLVM
@@ -122,6 +133,7 @@ jobs:
         LLVM_VERSION_FROM_SOURCE: ${{ steps.version-from-source.outputs.full-no-suffix }}
         INPUTS_RUNS_ON: ${{ inputs.runs-on }}
         INPUTS_BUILD_VARIANT: ${{ inputs.build-variant }}
+        INPUTS_ENABLE_PDB: ${{ inputs.enable-pdb }}
       shell: bash
       # In order for the test-release.sh script to run correctly, the LLVM
       # source needs to be at the following location relative to the build dir:
@@ -296,12 +308,20 @@ jobs:
             ;;
         esac
 
+        # Windows: whether to generate PDB debug info files and package them
+        # as an additional artifact.
+        windows_enable_pdb="false"
+        if [ "$INPUTS_ENABLE_PDB" = "true" ]; then
+          windows_enable_pdb="true"
+        fi
+
         echo "target-cmake-flags=$target_cmake_flags" >> $GITHUB_OUTPUT
         echo "build-runs-on=$build_runs_on" >> $GITHUB_OUTPUT
         echo "test-runs-on=$test_runs_on" >> $GITHUB_OUTPUT
         echo "attestation-name=$RUNNER_OS-$RUNNER_ARCH-release-binary-attestation" >> $GITHUB_OUTPUT
         echo "windows-enable-pgo=$windows_enable_pgo" >> $GITHUB_OUTPUT
         echo "windows-enable-thinlto=$windows_enable_thinlto" >> $GITHUB_OUTPUT
+        echo "windows-enable-pdb=$windows_enable_pdb" >> $GITHUB_OUTPUT
 
   build-release-package:
     name: "Build Release Package"
@@ -386,6 +406,7 @@ jobs:
         LLVM_VERSION: ${{ needs.prepare.outputs.release-version }}
         WINDOWS_ENABLE_PGO: ${{ needs.prepare.outputs.windows-enable-pgo }}
         WINDOWS_ENABLE_THINLTO: ${{ needs.prepare.outputs.windows-enable-thinlto }}
+        WINDOWS_ENABLE_PDB: ${{ needs.prepare.outputs.windows-enable-pdb }}
       run: |
         # TEMP (fork validation only): actions/setup-python installs a Python
         # into an ephemeral tool-cache dir ($env:pythonLocation) and prepends
@@ -421,6 +442,7 @@ jobs:
         $variantArgs = @()
         if ($env:WINDOWS_ENABLE_PGO -eq "true") { $variantArgs += "--enable-pgo" }
         if ($env:WINDOWS_ENABLE_THINLTO -eq "true") { $variantArgs += "--enable-thinlto" }
+        if ($env:WINDOWS_ENABLE_PDB -eq "true") { $variantArgs += "--enable-pdb" }
         Write-Host "Build variant flags: $variantArgs"
         .\build_llvm_release.bat "--$($env:RUNNER_ARCH.ToLower())" --version $env:LLVM_VERSION --local-python --skip-checkout @variantArgs
         if ($env:INPUTS_RUNS_ON -eq "windows-11-arm" -or $env:INPUTS_RUNS_ON -eq "windows-arm64-self-hosted") {
@@ -431,11 +453,20 @@ jobs:
           mv $zstd $env:GITHUB_WORKSPACE
         }
         $installer = (Get-ChildItem -Recurse -Filter "LLVM-*.msi" | Select-Object -First 1).fullName
-        $tarball = (Get-ChildItem -Recurse -Filter "*.tar.xz" | Select-Object -First 1).fullName
+        $tarball = (Get-ChildItem -Recurse -Filter "*.tar.xz" | Where-Object { $_.Name -notlike "*-pdb.tar.xz" } | Select-Object -First 1).fullName
         # Move installer to top-level directory so it is easier to upload.
         mv $installer $env:GITHUB_WORKSPACE
         mv $tarball $env:GITHUB_WORKSPACE
         echo "windows-installer-filename=$(Split-Path -Path $installer -Leaf)" >> $env:GITHUB_OUTPUT
+        if ($env:WINDOWS_ENABLE_PDB -eq "true") {
+          $pdbArchive = (Get-ChildItem -Recurse -Filter "*-pdb.tar.xz" | Select-Object -First 1).fullName
+          if ($pdbArchive) {
+            mv $pdbArchive $env:GITHUB_WORKSPACE
+            echo "windows-pdb-filename=$(Split-Path -Path $pdbArchive -Leaf)" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Warning "enable-pdb was requested but no '*-pdb.tar.xz' archive was found."
+          }
+        }
     
     - name: Dump Wix logs
       if: runner.os == 'Windows'
@@ -493,6 +524,13 @@ jobs:
           ${{ needs.prepare.outputs.release-binary-filename }}
           ${{ needs.prepare.outputs.release-binary-filename-zstd }}
           ${{ steps.build-windows.outputs.windows-installer-filename }}
+
+    - name: Upload Windows PDB debug info
+      if: runner.os == 'Windows' && steps.build-windows.outputs.windows-pdb-filename != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ runner.os }}-${{ runner.arch }}-release-pdb
+        path: ${{ steps.build-windows.outputs.windows-pdb-filename }}
 
     - name: Run Tests
       # These almost always fail so don't let them fail the build and prevent the uploads.

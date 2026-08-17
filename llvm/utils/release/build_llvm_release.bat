@@ -10,7 +10,7 @@ goto begin
 echo Script for building the LLVM installer on Windows,
 echo used for the releases at https://github.com/llvm/llvm-project/releases
 echo.
-echo Usage: build_llvm_release.bat --version ^<version^> [--x86,--x64, --arm64] [--skip-checkout] [--local-python] [--force-msvc] [--enable-pgo] [--enable-thinlto]
+echo Usage: build_llvm_release.bat --version ^<version^> [--x86,--x64, --arm64] [--skip-checkout] [--local-python] [--force-msvc] [--enable-pgo] [--enable-thinlto] [--enable-pdb]
 echo.
 echo Options:
 echo --version: [required] version to build
@@ -23,6 +23,7 @@ echo --local-python: use installed Python and does not try to use a specific ver
 echo --force-msvc: use MSVC compiler for stage0, even if clang-cl is present
 echo --enable-pgo: build an instrumented stage1 clang, train it, and use the resulting profile for stage2 (64-bit builds only)
 echo --enable-thinlto: build stage2 with ThinLTO (64-bit builds only)
+echo --enable-pdb: generate PDB debug info files for stage2 and include them as an additional artifact (64-bit builds only)
 echo.
 echo Note: At least one variant to build is required.
 echo.
@@ -44,6 +45,7 @@ set local-python=
 set force-msvc=
 set enable-pgo=
 set enable-thinlto=
+set enable-pdb=
 call :parse_args %*
 
 if "%help%" NEQ "" goto usage
@@ -360,9 +362,12 @@ cd build_%arch%
 if "%enable-pgo%" == "true" call :do_generate_profile || exit /b 1
 set lto_cmake_flag=
 if "%enable-thinlto%" == "true" set lto_cmake_flag=-DLLVM_ENABLE_LTO=Thin
+set pdb_cmake_flag=
+if "%enable-pdb%" == "true" set pdb_cmake_flag=-DLLVM_ENABLE_PDB=ON
 cmake -GNinja %cmake_flags% ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
   %lto_cmake_flag% ^
+  %pdb_cmake_flag% ^
   %common_lldb_flags% ^
   -DPYTHON_HOME=%PYTHONHOME% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
@@ -387,12 +392,23 @@ if "%arch%"=="amd64" (
   set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
 )
 cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
-  -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% %llvm_src%\llvm || exit /b 1
+  -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
+  %pdb_cmake_flag% ^
+  %llvm_src%\llvm || exit /b 1
 ninja install || exit /b 1
 :: check llvm_config is present & returns something
 %build_dir%/%filename%/bin/llvm-config.exe --bindir || exit /b 1
 cd ..
 7z a -ttar -so %filename%.tar %filename% | 7z a -txz -si %filename%.tar.xz
+
+if "%enable-pdb%" == "true" (
+  :: Package the PDB debug info files produced alongside the install tree
+  :: into their own archive so they can be uploaded as a separate artifact.
+  set pdb_filename=%filename%-pdb
+  pushd %filename%
+  7z a -ttar -so ..\!pdb_filename!.tar bin\*.pdb lib\*.pdb | 7z a -txz -si ..\!pdb_filename!.tar.xz
+  popd
+)
 
 exit /b 0
 
