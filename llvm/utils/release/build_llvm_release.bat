@@ -362,12 +362,9 @@ cd build_%arch%
 if "%enable-pgo%" == "true" call :do_generate_profile || exit /b 1
 set lto_cmake_flag=
 if "%enable-thinlto%" == "true" set lto_cmake_flag=-DLLVM_ENABLE_LTO=Thin
-set pdb_cmake_flag=
-if "%enable-pdb%" == "true" set pdb_cmake_flag=-DLLVM_ENABLE_PDB=ON
 cmake -GNinja %cmake_flags% ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
   %lto_cmake_flag% ^
-  %pdb_cmake_flag% ^
   %common_lldb_flags% ^
   -DPYTHON_HOME=%PYTHONHOME% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
@@ -391,6 +388,13 @@ if "%arch%"=="amd64" (
 ) else (
   set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
 )
+REM NOTE: LLVM_ENABLE_PDB is intentionally only set for this toolchain-only
+REM (tarball) reconfigure, not for the MSI/WiX "ninja package" build above:
+REM bundling PDBs into the WiX-generated MSI causes CPack/WiX packaging
+REM failures (likely due to duplicate file basenames / component limits),
+REM so PDBs are packaged separately as their own tarball instead.
+set pdb_cmake_flag=
+if "%enable-pdb%" == "true" set pdb_cmake_flag=-DLLVM_ENABLE_PDB=ON
 cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
   -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
   %pdb_cmake_flag% ^
