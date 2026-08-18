@@ -333,6 +333,9 @@ jobs:
     # label list, otherwise it is used as a plain runner-label string.
     # Revert before any upstream PR.
     runs-on: ${{ startsWith(needs.prepare.outputs.build-runs-on, '[') && fromJSON(needs.prepare.outputs.build-runs-on) || needs.prepare.outputs.build-runs-on }}
+    # Default GitHub Actions job timeout is 6 hours, which is too short for
+    # combined PGO+ThinLTO(+PDB) Windows builds on this runner. Extend it.
+    timeout-minutes: 600
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
       artifact-id: ${{ steps.artifact-upload.outputs.artifact-id }}
