@@ -10,7 +10,7 @@ goto begin
 echo Script for building the LLVM installer on Windows,
 echo used for the releases at https://github.com/llvm/llvm-project/releases
 echo.
-echo Usage: build_llvm_release.bat --version ^<version^> [--x86,--x64, --arm64] [--skip-checkout] [--local-python] [--force-msvc]
+echo Usage: build_llvm_release.bat --version ^<version^> [--x86,--x64, --arm64] [--skip-checkout] [--local-python] [--force-msvc] [--enable-pgo] [--enable-thinlto] [--enable-pdb]
 echo.
 echo Options:
 echo --version: [required] version to build
@@ -21,6 +21,9 @@ echo --arm64: build and test arm64 variant
 echo --skip-checkout: use local git checkout instead of downloading src.zip
 echo --local-python: use installed Python and does not try to use a specific version (3.11)
 echo --force-msvc: use MSVC compiler for stage0, even if clang-cl is present
+echo --enable-pgo: build an instrumented stage1 clang, train it, and use the resulting profile for stage2 (64-bit builds only)
+echo --enable-thinlto: build stage2 with ThinLTO (64-bit builds only)
+echo --enable-pdb: generate PDB debug info files for stage2 and include them as an additional artifact (64-bit builds only)
 echo.
 echo Note: At least one variant to build is required.
 echo.
@@ -40,6 +43,9 @@ set arm64=
 set skip-checkout=
 set local-python=
 set force-msvc=
+set enable-pgo=
+set enable-thinlto=
+set enable-pdb=
 call :parse_args %*
 
 if "%help%" NEQ "" goto usage
@@ -353,9 +359,12 @@ set cmake_flags=%all_cmake_flags:\=/%
 
 mkdir build_%arch%
 cd build_%arch%
-call :do_generate_profile || exit /b 1
+if "%enable-pgo%" == "true" call :do_generate_profile || exit /b 1
+set lto_cmake_flag=
+if "%enable-thinlto%" == "true" set lto_cmake_flag=-DLLVM_ENABLE_LTO=Thin
 cmake -GNinja %cmake_flags% ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
+  %lto_cmake_flag% ^
   %common_lldb_flags% ^
   -DPYTHON_HOME=%PYTHONHOME% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
@@ -379,13 +388,31 @@ if "%arch%"=="amd64" (
 ) else (
   set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
 )
+REM NOTE: LLVM_ENABLE_PDB is intentionally only set for this toolchain-only
+REM (tarball) reconfigure, not for the MSI/WiX "ninja package" build above:
+REM bundling PDBs into the WiX-generated MSI causes CPack/WiX packaging
+REM failures (likely due to duplicate file basenames / component limits),
+REM so PDBs are packaged separately as their own tarball instead.
+set pdb_cmake_flag=
+if "%enable-pdb%" == "true" set pdb_cmake_flag=-DLLVM_ENABLE_PDB=ON
 cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
-  -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% %llvm_src%\llvm || exit /b 1
+  -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
+  %pdb_cmake_flag% ^
+  %llvm_src%\llvm || exit /b 1
 ninja install || exit /b 1
 :: check llvm_config is present & returns something
 %build_dir%/%filename%/bin/llvm-config.exe --bindir || exit /b 1
 cd ..
 7z a -ttar -so %filename%.tar %filename% | 7z a -txz -si %filename%.tar.xz
+
+if "%enable-pdb%" == "true" (
+  :: Package the PDB debug info files produced alongside the install tree
+  :: into their own archive so they can be uploaded as a separate artifact.
+  set pdb_filename=%filename%-pdb
+  pushd %filename%
+  7z a -ttar -so ..\!pdb_filename!.tar bin\*.pdb lib\*.pdb | 7z a -txz -si ..\!pdb_filename!.tar.xz
+  popd
+)
 
 exit /b 0
 
@@ -400,8 +427,10 @@ set python_dir=%1
 
 REM Set Python environment
 if "%local-python%" == "true" (
-  FOR /F "delims=" %%i IN ('where python.exe ^| head -1') DO set python_exe=%%i
-  set PYTHONHOME=!python_exe:~0,-11!
+  set python_exe=
+  FOR /F "delims=" %%i IN ('where python.exe') DO if not defined python_exe set python_exe=%%i
+  for %%p in ("!python_exe!") do set PYTHONHOME=%%~dpp
+  if "!PYTHONHOME:~-1!" == "\" set PYTHONHOME=!PYTHONHOME:~0,-1!
 ) else (
   %python_dir%/python.exe --version || exit /b 1
   set PYTHONHOME=%python_dir%
@@ -498,18 +527,23 @@ cmake -GNinja %cmake_flags% -DLLVM_TARGETS_TO_BUILD=Native ^
 ninja clang || ninja clang || ninja clang || exit /b 1
 set instrumented_clang=%cd:\=/%/bin/clang-cl.exe
 cd ..
-REM Use that to build part of llvm to generate a profile.
+REM Build LLVMSupport with the instrumented clang to generate a broad profile.
+REM This mirrors the Linux perf-training approach (llvm-support/build.test)
+REM and exercises the compiler across many translation units and code paths,
+REM rather than compiling a single file (Sema.cpp).
 mkdir train
 cd train
-cmake -GNinja %cmake_flags% ^
+cmake -GNinja ^
+  -DCMAKE_BUILD_TYPE=Release ^
   -DCMAKE_C_COMPILER=%instrumented_clang% ^
   -DCMAKE_CXX_COMPILER=%instrumented_clang% ^
-  -DLLVM_ENABLE_PROJECTS=clang ^
   -DLLVM_TARGETS_TO_BUILD=Native ^
+  -DLLVM_ENABLE_PROJECTS="" ^
+  -DLLVM_ENABLE_RUNTIMES="" ^
   %llvm_src%\llvm || exit /b 1
 REM Drop profiles generated from running cmake; those are not representative.
 del ..\instrument\profiles\*.profraw
-ninja tools/clang/lib/Sema/CMakeFiles/obj.clangSema.dir/Sema.cpp.obj
+ninja LLVMSupport || exit /b 1
 cd ..
 set profile=%cd:\=/%/profile.profdata
 %stage0_bin_dir%\llvm-profdata merge -output=%profile% instrument\profiles\*.profraw || exit /b 1
