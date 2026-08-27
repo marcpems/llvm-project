@@ -12,6 +12,21 @@ on:
         required: true
         default: false
         type: boolean
+      build-variant:
+        description: "Windows build variant: which of PGO training / ThinLTO to enable"
+        required: true
+        type: choice
+        default: neither
+        options:
+          - neither
+          - pgo-only
+          - thinlto-only
+          - pgo-and-thinlto
+      enable-pdb:
+        description: "Windows: generate PDB debug info files and upload them as an additional artifact"
+        required: true
+        default: false
+        type: boolean
       runs-on:
         description: "Runner to use for the build"
         required: true
@@ -22,6 +37,13 @@ on:
           - ubuntu-22.04
           - ubuntu-22.04-arm
           - macos-14
+          # Unlike release-binaries.yml (which is only ever invoked for
+          # these OSes via the release-binaries-all.yml matrix), this
+          # variants workflow also allows dispatching the Windows jobs
+          # directly, since choosing a PGO/ThinLTO/PDB combination to
+          # compare is the whole point of running it standalone.
+          - windows-11-arm
+          - windows-2022
 
   workflow_call:
     inputs:
@@ -32,6 +54,16 @@ on:
       upload:
         description: 'Upload binaries to the release page'
         required: true
+        default: false
+        type: boolean
+      build-variant:
+        description: "Windows build variant: which of PGO training / ThinLTO to enable"
+        required: false
+        default: neither
+        type: string
+      enable-pdb:
+        description: "Windows: generate PDB debug info files and upload them as an additional artifact"
+        required: false
         default: false
         type: boolean
       runs-on:
@@ -67,6 +99,9 @@ jobs:
       build-runs-on: ${{ steps.vars.outputs.build-runs-on }}
       test-runs-on: ${{ steps.vars.outputs.build-runs-on }}
       attestation-name: ${{ steps.vars.outputs.attestation-name }}
+      windows-enable-pgo: ${{ steps.vars.outputs.windows-enable-pgo }}
+      windows-enable-thinlto: ${{ steps.vars.outputs.windows-enable-thinlto }}
+      windows-enable-pdb: ${{ steps.vars.outputs.windows-enable-pdb }}
 
     steps:
     - name: Validate Release Version
@@ -88,6 +123,8 @@ jobs:
         LLVM_VERSION_MAJOR: ${{ steps.version-from-source.outputs.major }}
         INPUTS_RUNS_ON: ${{ inputs.runs-on }}
         INPUTS_RELEASE_VERSION: ${{ inputs.release-version }}
+        INPUTS_BUILD_VARIANT: ${{ inputs.build-variant }}
+        INPUTS_ENABLE_PDB: ${{ inputs.enable-pdb }}
       shell: bash
       # In order for the test-release.sh script to run correctly, the LLVM
       # source needs to be at the following location relative to the build dir:
@@ -165,8 +202,27 @@ jobs:
         fi
 
         if [ "$RUNNER_OS" = "Windows" ]; then
-          # The build times out on Windows, so we need to disable LTO.
+          # The build times out on Windows, so we need to disable LTO by
+          # default; the build-variant input below can re-enable it.
           target_cmake_flags="$target_cmake_flags -DLLVM_RELEASE_ENABLE_LTO=OFF"
+        else
+          # Non-Windows builds use the target-cmake-flags/Release.cmake path
+          # (Release.cmake defaults to PGO=ON, LTO=THIN), so translate the
+          # build-variant choice into explicit overrides here too.
+          case "$INPUTS_BUILD_VARIANT" in
+            neither|"")
+              target_cmake_flags="$target_cmake_flags -DLLVM_RELEASE_ENABLE_LTO=OFF -DLLVM_RELEASE_ENABLE_PGO=OFF"
+              ;;
+            pgo-only)
+              target_cmake_flags="$target_cmake_flags -DLLVM_RELEASE_ENABLE_LTO=OFF -DLLVM_RELEASE_ENABLE_PGO=ON"
+              ;;
+            thinlto-only)
+              target_cmake_flags="$target_cmake_flags -DLLVM_RELEASE_ENABLE_LTO=THIN -DLLVM_RELEASE_ENABLE_PGO=OFF"
+              ;;
+            pgo-and-thinlto)
+              target_cmake_flags="$target_cmake_flags -DLLVM_RELEASE_ENABLE_LTO=THIN -DLLVM_RELEASE_ENABLE_PGO=ON"
+              ;;
+          esac
         fi
 
         case "$INPUTS_RUNS_ON" in
@@ -211,16 +267,53 @@ jobs:
 
         target_cmake_flags="$target_cmake_flags -D${bootstrap_prefix}_CPACK_PACKAGE_FILE_NAME=$release_binary_basename"
 
+        # Translate the build-variant choice into individual PGO/ThinLTO
+        # flags consumed by the Windows "build_llvm_release.bat" invocation
+        # (these are only meaningful for Windows builds).
+        windows_enable_pgo="false"
+        windows_enable_thinlto="false"
+        case "$INPUTS_BUILD_VARIANT" in
+          pgo-only)
+            windows_enable_pgo="true"
+            ;;
+          thinlto-only)
+            windows_enable_thinlto="true"
+            ;;
+          pgo-and-thinlto)
+            windows_enable_pgo="true"
+            windows_enable_thinlto="true"
+            ;;
+          neither|"")
+            ;;
+          *)
+            echo "Unknown build-variant '$INPUTS_BUILD_VARIANT'" >&2
+            exit 1
+            ;;
+        esac
+
+        # Windows: whether to generate PDB debug info files and package them
+        # as an additional artifact.
+        windows_enable_pdb="false"
+        if [ "$INPUTS_ENABLE_PDB" = "true" ]; then
+          windows_enable_pdb="true"
+        fi
+
         echo "target-cmake-flags=$target_cmake_flags" >> $GITHUB_OUTPUT
         echo "build-runs-on=$build_runs_on" >> $GITHUB_OUTPUT
         echo "test-runs-on=$test_runs_on" >> $GITHUB_OUTPUT
         echo "attestation-name=$RUNNER_OS-$RUNNER_ARCH-release-binary-attestation" >> $GITHUB_OUTPUT
+        echo "windows-enable-pgo=$windows_enable_pgo" >> $GITHUB_OUTPUT
+        echo "windows-enable-thinlto=$windows_enable_thinlto" >> $GITHUB_OUTPUT
+        echo "windows-enable-pdb=$windows_enable_pdb" >> $GITHUB_OUTPUT
 
   build-release-package:
     name: "Build Release Package"
     needs: prepare
     if: github.repository_owner == 'llvm'
     runs-on: ${{ needs.prepare.outputs.build-runs-on }}
+    # Default GitHub Actions job timeout is 6 hours, which is too short for
+    # combined PGO+ThinLTO(+PDB) Windows builds. Extend it.
+    timeout-minutes: 600
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
       artifact-id: ${{ steps.artifact-upload.outputs.artifact-id }}
@@ -300,28 +393,51 @@ jobs:
       env:
         INPUTS_RUNS_ON: ${{ inputs.runs-on }}
         LLVM_VERSION: ${{ needs.prepare.outputs.release-version }}
+        WINDOWS_ENABLE_PGO: ${{ needs.prepare.outputs.windows-enable-pgo }}
+        WINDOWS_ENABLE_THINLTO: ${{ needs.prepare.outputs.windows-enable-thinlto }}
+        WINDOWS_ENABLE_PDB: ${{ needs.prepare.outputs.windows-enable-pdb }}
       run: |
         subst S: ${{ github.workspace }}
         cd S:\llvm\utils\release\
-        .\build_llvm_release.bat "--$($env:RUNNER_ARCH.ToLower())" --version $env:LLVM_VERSION --local-python --skip-checkout
+        $variantArgs = @()
+        if ($env:WINDOWS_ENABLE_PGO -eq "true") { $variantArgs += "--enable-pgo" }
+        if ($env:WINDOWS_ENABLE_THINLTO -eq "true") { $variantArgs += "--enable-thinlto" }
+        if ($env:WINDOWS_ENABLE_PDB -eq "true") { $variantArgs += "--enable-pdb" }
+        Write-Host "Build variant flags: $variantArgs"
+        .\build_llvm_release.bat "--$($env:RUNNER_ARCH.ToLower())" --version $env:LLVM_VERSION --local-python --skip-checkout @variantArgs
         if ($env:INPUTS_RUNS_ON -eq "windows-11-arm") {
           $zstd = (Get-ChildItem -Recurse -Filter "zstd.exe" | Select-Object -First 1).fullName
           mv $zstd $env:GITHUB_WORKSPACE
         }
         $installer = (Get-ChildItem -Recurse -Filter "LLVM-*.msi" | Select-Object -First 1).fullName
-        $tarball = (Get-ChildItem -Recurse -Filter "*.tar.xz" | Select-Object -First 1).fullName
+        $tarball = (Get-ChildItem -Recurse -Filter "*.tar.xz" | Where-Object { $_.Name -notlike "*-pdb.tar.xz" } | Select-Object -First 1).fullName
         # Move installer to top-level directory so it is easier to upload.
         mv $installer $env:GITHUB_WORKSPACE
         mv $tarball $env:GITHUB_WORKSPACE
         echo "windows-installer-filename=$(Split-Path -Path $installer -Leaf)" >> $env:GITHUB_OUTPUT
-    
+        if ($env:WINDOWS_ENABLE_PDB -eq "true") {
+          $pdbArchive = (Get-ChildItem -Recurse -Filter "*-pdb.tar.xz" | Select-Object -First 1).fullName
+          if ($pdbArchive) {
+            mv $pdbArchive $env:GITHUB_WORKSPACE
+            echo "windows-pdb-filename=$(Split-Path -Path $pdbArchive -Leaf)" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Warning "enable-pdb was requested but no '*-pdb.tar.xz' archive was found."
+          }
+        }
+
     - name: Dump Wix logs
       if: runner.os == 'Windows' && always()
+      continue-on-error: true
       env:
         LLVM_VERSION: ${{ needs.prepare.outputs.release-version }}
         BUILD_DIR_SUFFIX: ${{ case(runner.arch == 'ARM64', 'arm64', 'amd64') }}
       run: |
-        cat S:/llvm/utils/release/llvm_package_$($env:LLVM_VERSION)/build_$($env:BUILD_DIR_SUFFIX)/_CPack_Packages/win64/WIX/wix.log
+        $wixLog = "S:/llvm/utils/release/llvm_package_$($env:LLVM_VERSION)/build_$($env:BUILD_DIR_SUFFIX)/_CPack_Packages/win64/WIX/wix.log"
+        if (Test-Path $wixLog) {
+          Get-Content $wixLog
+        } else {
+          Write-Host "No wix.log found at '$wixLog' (WiX packaging likely succeeded without needing it)."
+        }
 
     - name: Create zstd compressed tarball
       shell: bash
@@ -365,6 +481,13 @@ jobs:
           ${{ needs.prepare.outputs.release-binary-filename }}
           ${{ needs.prepare.outputs.release-binary-filename-zstd }}
           ${{ steps.build-windows.outputs.windows-installer-filename }}
+
+    - name: Upload Windows PDB debug info
+      if: runner.os == 'Windows' && steps.build-windows.outputs.windows-pdb-filename != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ runner.os }}-${{ runner.arch }}-release-pdb
+        path: ${{ steps.build-windows.outputs.windows-pdb-filename }}
 
     - name: Run Tests
       # These almost always fail so don't let them fail the build and prevent the uploads.
