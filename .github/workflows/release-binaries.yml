@@ -39,6 +39,15 @@ on:
           - macos-14
           - windows-2022
           - windows-11-arm
+          # TEMP (fork validation only): route the build to a self-hosted
+          # Windows ARM64 runner (labels: self-hosted, windows, ARM64),
+          # bypassing the GitHub-hosted windows-11-arm runner/timeout.
+          # Revert before any upstream PR.
+          - windows-arm64-self-hosted
+          # TEMP (fork validation only): route the build to a self-hosted
+          # Windows X64 runner (labels: self-hosted, windows, X64).
+          # Revert before any upstream PR.
+          - windows-x64-self-hosted
 
   workflow_call:
     inputs:
@@ -85,8 +94,11 @@ permissions:
 jobs:
   prepare:
     name: Prepare to build binaries
-    runs-on: ${{ inputs.runs-on }}
-    if: github.repository_owner == 'llvm'
+    # TEMP (fork validation only): route to the self-hosted Windows ARM64/X64
+    # runner when explicitly requested via inputs.runs-on. Revert before any
+    # upstream PR.
+    runs-on: ${{ inputs.runs-on == 'windows-arm64-self-hosted' && fromJSON('["self-hosted","windows","ARM64"]') || inputs.runs-on == 'windows-x64-self-hosted' && fromJSON('["self-hosted","windows","X64"]') || inputs.runs-on }}
+    if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'  # TEMP (fork validation only): allow fork dispatch. Revert before any upstream PR
     outputs:
       release-version: ${{ steps.vars.outputs.release-version }}
       ref: ${{ steps.vars.outputs.ref }}
@@ -204,19 +216,53 @@ jobs:
 
         case "$INPUTS_RUNS_ON" in
           ubuntu-22.04* | windows-2022)
-            build_runs_on="depot-$INPUTS_RUNS_ON-16"
+            # TEMP (fork validation only): this fork has no Depot runners
+            # registered, so keep using the plain GitHub-hosted label instead
+            # of remapping to "depot-*-16". Revert before any upstream PR.
+            if [ "${{ github.repository_owner }}" = "marcpems" ]; then
+              build_runs_on="$INPUTS_RUNS_ON"
+            else
+              build_runs_on="depot-$INPUTS_RUNS_ON-16"
+            fi
             test_runs_on=$build_runs_on
             ;;
           windows-11-arm)
-            if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            # TEMP (fork validation only): this fork has no self-hosted
+            # "windows-11-arm-16core" runner, so always use the plain
+            # GitHub-hosted "windows-11-arm" label. Revert before any
+            # upstream PR.
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_EVENT_NAME" = "schedule" ] || [ "${{ github.repository_owner }}" = "marcpems" ]; then
               build_runs_on="$INPUTS_RUNS_ON"
             else
               build_runs_on="windows-11-arm-16core"
             fi
             test_runs_on=$build_runs_on
             ;;
+          windows-arm64-self-hosted)
+            # TEMP (fork validation only): route to the self-hosted Windows
+            # ARM64 runner (labels: self-hosted, windows, ARM64) instead of
+            # the GitHub-hosted windows-11-arm runner. build-runs-on carries
+            # a JSON array literal here; the consuming jobs' `runs-on` use
+            # fromJSON() to turn it back into a label list. Revert before
+            # any upstream PR.
+            build_runs_on='["self-hosted","windows","ARM64"]'
+            test_runs_on=$build_runs_on
+            ;;
+          windows-x64-self-hosted)
+            # TEMP (fork validation only): route to the self-hosted Windows
+            # X64 runner (labels: self-hosted, windows, X64) instead of the
+            # GitHub-hosted windows-2022 runner. build-runs-on carries
+            # a JSON array literal here; the consuming jobs' `runs-on` use
+            # fromJSON() to turn it back into a label list. Revert before
+            # any upstream PR.
+            build_runs_on='["self-hosted","windows","X64"]'
+            test_runs_on=$build_runs_on
+            ;;
           macos-14)
-            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # TEMP (fork validation only): this fork has no Depot runners
+            # registered, so keep using the plain GitHub-hosted label.
+            # Revert before any upstream PR.
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "${{ github.repository_owner }}" = "marcpems" ]; then
               build_runs_on="$INPUTS_RUNS_ON"
             else
               build_runs_on="depot-macos-14"
@@ -271,8 +317,13 @@ jobs:
   build-release-package:
     name: "Build Release Package"
     needs: prepare
-    if: github.repository_owner == 'llvm'
-    runs-on: ${{ needs.prepare.outputs.build-runs-on }}
+    if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'  # TEMP (fork validation only): allow fork dispatch. Revert before any upstream PR
+    # TEMP (fork validation only): needs.prepare.outputs.build-runs-on carries
+    # a JSON array literal (e.g. '["self-hosted","windows","ARM64"]') when
+    # routing to the self-hosted runner; fromJSON() converts it back into a
+    # label list, otherwise it is used as a plain runner-label string.
+    # Revert before any upstream PR.
+    runs-on: ${{ startsWith(needs.prepare.outputs.build-runs-on, '[') && fromJSON(needs.prepare.outputs.build-runs-on) || needs.prepare.outputs.build-runs-on }}
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
       artifact-id: ${{ steps.artifact-upload.outputs.artifact-id }}
@@ -359,6 +410,35 @@ jobs:
         WINDOWS_ENABLE_PDB: ${{ needs.prepare.outputs.windows-enable-pdb }}
         WINDOWS_ENHANCED_PGO: ${{ needs.prepare.outputs.windows-enhanced-pgo }}
       run: |
+        # TEMP (fork validation only): actions/setup-python installs a Python
+        # into an ephemeral tool-cache dir ($env:pythonLocation) and prepends
+        # it to PATH, while this self-hosted runner also has its own Python
+        # install earlier on PATH. Having two python.exe candidates visible
+        # at once makes CMake's FindPython3 search non-deterministic: the
+        # top-level build's --local-python (a PATH-based `where python.exe`
+        # search) and the nested "runtimes-configure" sub-build's CMake
+        # configure (which relies on the Python3_ROOT_DIR env var set by
+        # actions/setup-python, pointing at the tool-cache) can end up
+        # picking different/inconsistent interpreters between runs, and the
+        # tool-cache one is sometimes missing/broken on this runner. Remove
+        # the tool-cache Python from PATH and repoint Python3_ROOT_DIR at the
+        # runner's own known-good Python so there is exactly one unambiguous
+        # candidate for both lookup paths. Revert before any upstream PR.
+        # NOTE: Get-Command without -All only returns the first PATH match,
+        # so it must be used here or every candidate but the tool-cache one
+        # gets silently dropped before the Where-Object filter even runs.
+        $systemPython = (Get-Command python.exe -All -ErrorAction SilentlyContinue |
+          Where-Object { -not $env:pythonLocation -or ($_.Source -notlike "$($env:pythonLocation)*") } |
+          Select-Object -First 1).Source
+        if ($systemPython -and $env:pythonLocation) {
+          $systemPythonDir = Split-Path $systemPython
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -notlike "$($env:pythonLocation)*") }) -join ';'
+          $env:Python3_ROOT_DIR = $systemPythonDir
+          Write-Host "Using system Python at '$systemPython'; removed tool-cache Python from PATH and set Python3_ROOT_DIR='$systemPythonDir'"
+        } else {
+          Write-Warning "Could not find a system python.exe outside of pythonLocation; leaving PATH/Python3_ROOT_DIR untouched."
+        }
+
         subst S: ${{ github.workspace }}
         cd S:\llvm\utils\release\
         $variantArgs = @()
@@ -372,8 +452,12 @@ jobs:
         if ($env:WINDOWS_ENABLE_THINLTO -eq "true") { $variantArgs += "--enable-thinlto" }
         if ($env:WINDOWS_ENABLE_PDB -eq "true") { $variantArgs += "--enable-pdb" }
         if ($env:WINDOWS_ENHANCED_PGO -eq "true") { $variantArgs += "--enhanced-pgo" }
+        Write-Host "Build variant flags: $variantArgs"
         .\build_llvm_release.bat "--$($env:RUNNER_ARCH.ToLower())" --version $env:LLVM_VERSION --local-python --skip-checkout @variantArgs
-        if ($env:INPUTS_RUNS_ON -eq "windows-11-arm") {
+        if ($env:INPUTS_RUNS_ON -eq "windows-11-arm" -or $env:INPUTS_RUNS_ON -eq "windows-arm64-self-hosted") {
+          # TEMP (fork validation only): the self-hosted ARM64 runner has no
+          # system-wide zstd either, so reuse the same built zstd.exe binary
+          # as the windows-11-arm case. Revert before any upstream PR.
           $zstd = (Get-ChildItem -Recurse -Filter "zstd.exe" | Select-Object -First 1).fullName
           mv $zstd $env:GITHUB_WORKSPACE
         }
@@ -404,7 +488,7 @@ jobs:
       env:
         RELEASE_BINARY_FILENAME: ${{ needs.prepare.outputs.release-binary-filename }}
         RELEASE_BINARY_FILENAME_ZSTD: ${{ needs.prepare.outputs.release-binary-filename-zstd }}
-        ZSTD: ${{ inputs.runs-on == 'windows-11-arm' && './zstd.exe' || 'zstd' }}
+        ZSTD: ${{ (inputs.runs-on == 'windows-11-arm' || inputs.runs-on == 'windows-arm64-self-hosted') && './zstd.exe' || 'zstd' }}
       run: |
         xz -dc "$RELEASE_BINARY_FILENAME" | "$ZSTD" --ultra -22 -T0 -o "$RELEASE_BINARY_FILENAME_ZSTD"
 
