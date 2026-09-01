@@ -430,7 +430,12 @@ if "%enable-pdb%" == "true" (
   REM consistent with console-handle contention/corruption between the
   REM two concurrently-running processes. A dedicated console avoids
   REM sharing those handles at all.
-  start "pdb_build" /min cmd /c "ninja -j36 install > ..\pdb_build.log 2>&1 & echo %%errorlevel%% > ..\pdb_build.done" < nul
+  REM NOTE: "/v:on" + "^!errorlevel^!" (rather than "%%errorlevel%%") is
+  REM required so ninja's real exit code is captured. Without delayed
+  REM expansion, cmd.exe substitutes %errorlevel% once when the whole
+  REM "cmd1 & cmd2" line is parsed (before ninja even runs), so it would
+  REM always report the pre-existing errorlevel instead of ninja's result.
+  start "pdb_build" /min cmd /v:on /c "ninja -j36 install > ..\pdb_build.log 2>&1 & echo ^!errorlevel^! > ..\pdb_build.done" < nul
   cd ..\build_%arch%
   REM EXPERIMENT (perf investigation, not for merge): confirm disk space
   REM immediately after the concurrent PDB build tree is created, so a
@@ -492,7 +497,12 @@ if not exist ..\pdb_build.done (
   ping -n 6 127.0.0.1 >nul
   goto :wait_for_pdb_build
 )
-set /p pdb_build_rc=<..\pdb_build.done
+REM Use "for /f" rather than "set /p" to read the exit code: "for /f"
+REM tokenizes on whitespace and strips it, whereas "set /p" would take any
+REM trailing spaces/junk in the file literally, breaking the "== 0" check
+REM below even when the underlying build actually succeeded.
+set pdb_build_rc=
+for /f %%r in (..\pdb_build.done) do set pdb_build_rc=%%r
 if not "%pdb_build_rc%" == "0" (
   type ..\pdb_build.log
   exit /b 1
