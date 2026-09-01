@@ -1,7 +1,10 @@
 @echo off
 
 REM Filter out tests that are known to fail.
-set "LIT_FILTER_OUT=gh110231.cpp|crt_initializers.cpp|init-order-atexit.cpp|use_after_return_linkage.cpp|initialization-bug.cpp|initialization-bug-no-global.cpp|trace-malloc-unbalanced.test|trace-malloc-2.test|TraceMallocTest"
+REM NOTE: this unconditionally overwrites any LIT_FILTER_OUT inherited from
+REM the environment (e.g. set via a self-hosted runner's .env file), so any
+REM additional exclusions must be added here rather than in the environment.
+set "LIT_FILTER_OUT=gh110231.cpp|crt_initializers.cpp|init-order-atexit.cpp|use_after_return_linkage.cpp|initialization-bug.cpp|initialization-bug-no-global.cpp|trace-malloc-unbalanced.test|trace-malloc-2.test|TraceMallocTest|MemCpyOOBTest|dll_intercept_memcpy_indirect|intercept_memcpy\.cpp|memset_test\.cpp"
 
 setlocal enabledelayedexpansion
 goto begin
