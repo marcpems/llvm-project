@@ -334,12 +334,17 @@ cmake -GNinja %cmake_flags% ^
   -DLLVM_TARGETS_TO_BUILD=Native ^
   %llvm_src%\llvm || exit /b 1
 ninja || exit /b 1
-ninja check-llvm || exit /b 1
-ninja check-clang || exit /b 1
-ninja check-lld || exit /b 1
-if "%arch%"=="amd64" (
-  ninja check-runtimes || exit /b 1
-)
+REM EXPERIMENT (perf investigation, not for merge): stage0 builds a
+REM throwaway bootstrap compiler that is discarded after stage1/stage2;
+REM the same check-llvm/check-clang/check-lld/check-runtimes suites run
+REM again against the real stage2 compiler below, so running them here too
+REM is redundant. Skip them to measure the time saved.
+REM ninja check-llvm || exit /b 1
+REM ninja check-clang || exit /b 1
+REM ninja check-lld || exit /b 1
+REM if "%arch%"=="amd64" (
+REM   ninja check-runtimes || exit /b 1
+REM )
 cd..
 
 REM CMake expects the paths that specifies the compiler and linker to be
@@ -362,14 +367,59 @@ cd build_%arch%
 call :do_generate_profile || exit /b 1
 set lto_cmake_flag=
 if "%enable-thinlto%" == "true" set lto_cmake_flag=-DLLVM_ENABLE_LTO=Thin
+REM EXPERIMENT (perf investigation, not for merge): without an explicit
+REM LLVM_PARALLEL_LINK_JOBS, LLVM's CMake auto-caps ThinLTO link
+REM parallelism to 2 jobs ("ThinLTO provides its own parallel linking -
+REM limiting parallel link jobs to 2"), leaving most of the 72 cores idle
+REM during the link-heavy phase. Raise the cap so more links run at once.
+set link_jobs_cmake_flag=
+if "%enable-thinlto%" == "true" set link_jobs_cmake_flag=-DLLVM_PARALLEL_LINK_JOBS=4
 cmake -GNinja %cmake_flags% ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
   -DLLVM_ENABLE_RUNTIMES="compiler-rt;openmp" ^
   %lto_cmake_flag% ^
+  %link_jobs_cmake_flag% ^
   %common_lldb_flags% ^
   -DPYTHON_HOME=%PYTHONHOME% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
 ninja || exit /b 1
+
+:: generate tarball with install toolchain only off
+if "%arch%"=="amd64" (
+  set filename=clang+llvm-%version%-x86_64-pc-windows-msvc
+) else (
+  set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
+)
+REM EXPERIMENT (perf investigation, not for merge): LLVM_ENABLE_PDB flips
+REM the /Zi compile flag, which invalidates every object file from the
+REM build above and forces a full serial recompile+relink (observed ~41
+REM min) after the WiX/MSI packaging finishes. That recompile does not
+REM depend on the test suite or WiX packaging below, so kick it off now in
+REM a separate build directory and let it run concurrently with them,
+REM hiding most/all of its wall-clock cost instead of paying for it
+REM serially at the end. LLVM_ENABLE_PDB is still never set for the
+REM MSI/WiX "ninja package" build below: bundling PDBs into the
+REM WiX-generated MSI causes CPack/WiX packaging failures, so PDBs are
+REM packaged separately as their own tarball instead.
+if "%enable-pdb%" == "true" (
+  cd ..
+  mkdir build_%arch%_pdb
+  cd build_%arch%_pdb
+  cmake -GNinja %cmake_flags% ^
+    -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
+    -DLLVM_ENABLE_RUNTIMES="compiler-rt;openmp" ^
+    %lto_cmake_flag% ^
+    %link_jobs_cmake_flag% ^
+    %common_lldb_flags% ^
+    -DPYTHON_HOME=%PYTHONHOME% ^
+    %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
+    -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
+    -DLLVM_ENABLE_PDB=ON ^
+    %llvm_src%\llvm || exit /b 1
+  del /q ..\pdb_build.done 2>nul
+  start "pdb_build" /b cmd /c "ninja -j36 install > ..\pdb_build.log 2>&1 & echo %%errorlevel%% > ..\pdb_build.done"
+  cd ..\build_%arch%
+)
 ninja check-llvm || exit /b 1
 ninja check-clang || exit /b 1
 ninja check-lld || exit /b 1
@@ -383,23 +433,14 @@ REM ninja check-mlir || exit /b 1
 REM ninja check-lldb || exit /b 1
 ninja package || exit /b 1
 
-:: generate tarball with install toolchain only off
-if "%arch%"=="amd64" (
-  set filename=clang+llvm-%version%-x86_64-pc-windows-msvc
+if "%enable-pdb%" == "true" (
+  call :wait_for_pdb_build || exit /b 1
 ) else (
-  set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
+  cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
+    -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
+    %llvm_src%\llvm || exit /b 1
+  ninja install || exit /b 1
 )
-REM NOTE: LLVM_ENABLE_PDB is intentionally only set for this toolchain-only
-REM (tarball) reconfigure, not for the MSI/WiX "ninja package" build above:
-REM bundling PDBs into the WiX-generated MSI causes CPack/WiX packaging
-REM failures, so PDBs are packaged separately as their own tarball instead.
-set pdb_cmake_flag=
-if "%enable-pdb%" == "true" set pdb_cmake_flag=-DLLVM_ENABLE_PDB=ON
-cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
-  -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
-  %pdb_cmake_flag% ^
-  %llvm_src%\llvm || exit /b 1
-ninja install || exit /b 1
 :: check llvm_config is present & returns something
 %build_dir%/%filename%/bin/llvm-config.exe --bindir || exit /b 1
 cd ..
@@ -416,6 +457,25 @@ if "%enable-pdb%" == "true" (
 )
 7z a -ttar -so %filename%.tar %filename% | 7z a -txz -si %filename%.tar.xz
 
+exit /b 0
+
+::==============================================================================
+:: EXPERIMENT (perf investigation, not for merge): poll for the concurrent
+:: PDB build kicked off in :do_build_64_common to finish, and propagate its
+:: exit code. Must be a standalone function (not an inline goto/label inside
+:: a parenthesized if-block) since cmd.exe does not reliably support
+:: jumping to a label defined inside the same "( ... )" block.
+::==============================================================================
+:wait_for_pdb_build
+if not exist ..\pdb_build.done (
+  ping -n 6 127.0.0.1 >nul
+  goto :wait_for_pdb_build
+)
+set /p pdb_build_rc=<..\pdb_build.done
+if not "%pdb_build_rc%" == "0" (
+  type ..\pdb_build.log
+  exit /b 1
+)
 exit /b 0
 
 ::==============================================================================
