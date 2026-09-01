@@ -403,16 +403,18 @@ ninja install || exit /b 1
 :: check llvm_config is present & returns something
 %build_dir%/%filename%/bin/llvm-config.exe --bindir || exit /b 1
 cd ..
-7z a -ttar -so %filename%.tar %filename% | 7z a -txz -si %filename%.tar.xz
-
 if "%enable-pdb%" == "true" (
   :: Package the PDB debug info files produced alongside the install tree
-  :: into their own archive so they can be uploaded as a separate artifact.
+  :: into their own archive so they can be uploaded as a separate artifact,
+  :: then delete them from the install tree so the main archive command
+  :: below does not compress them a second time.
   set pdb_filename=%filename%-pdb
   pushd %filename%
   7z a -ttar -so ..\!pdb_filename!.tar bin\*.pdb lib\*.pdb | 7z a -txz -si ..\!pdb_filename!.tar.xz
+  del /s /q bin\*.pdb lib\*.pdb
   popd
 )
+7z a -ttar -so %filename%.tar %filename% | 7z a -txz -si %filename%.tar.xz
 
 exit /b 0
 
