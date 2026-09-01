@@ -417,7 +417,17 @@ if "%enable-pdb%" == "true" (
     -DLLVM_ENABLE_PDB=ON ^
     %llvm_src%\llvm || exit /b 1
   del /q ..\pdb_build.done 2>nul
-  start "pdb_build" /b cmd /c "ninja -j36 install > ..\pdb_build.log 2>&1 & echo %%errorlevel%% > ..\pdb_build.done"
+  REM EXPERIMENT (perf investigation, not for merge): use "start /min"
+  REM (a genuinely separate, minimized console) rather than "start /b"
+  REM (which shares the parent's console/IO handles). The prior attempt
+  REM (run 33500315343) showed the background job's own console output
+  REM (e.g. its own "-- Performing bootstrapping runtimes build" message)
+  REM bleeding into and interleaving with this foreground script's
+  REM captured output despite the ">" file redirection below, which is
+  REM consistent with console-handle contention/corruption between the
+  REM two concurrently-running processes. A dedicated console avoids
+  REM sharing those handles at all.
+  start "pdb_build" /min cmd /c "ninja -j36 install > ..\pdb_build.log 2>&1 & echo %%errorlevel%% > ..\pdb_build.done" < nul
   cd ..\build_%arch%
   REM EXPERIMENT (perf investigation, not for merge): confirm disk space
   REM immediately after the concurrent PDB build tree is created, so a
