@@ -397,6 +397,19 @@ jobs:
         # Add wix install directory to PATH.
         Split-Path (Get-ChildItem -Path "C:\" -Filter candle.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName >> $env:GITHUB_PATH
 
+    # EXPERIMENT (perf investigation, not for merge): the previous
+    # experiment run (33500315343) died silently mid-packaging with no
+    # script-level error, immediately after a second full build tree
+    # (build_%arch%_pdb) was added to run concurrently with the main
+    # build/test/packaging tree. Log free disk space before the Windows
+    # build starts so a disk-exhaustion root cause can be confirmed or
+    # ruled out on the next attempt.
+    - name: Report free disk space (experiment diagnostic)
+      if: runner.os == 'Windows'
+      run: |
+        Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+        Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,2)}}, @{n='SizeGB';e={[math]::Round($_.Size/1GB,2)}} | Format-Table -AutoSize
+
     - name: Build Windows
       id: build-windows
       if: runner.os == 'Windows'

@@ -419,6 +419,10 @@ if "%enable-pdb%" == "true" (
   del /q ..\pdb_build.done 2>nul
   start "pdb_build" /b cmd /c "ninja -j36 install > ..\pdb_build.log 2>&1 & echo %%errorlevel%% > ..\pdb_build.done"
   cd ..\build_%arch%
+  REM EXPERIMENT (perf investigation, not for merge): confirm disk space
+  REM immediately after the concurrent PDB build tree is created, so a
+  REM later hang/failure can be correlated with disk usage at this point.
+  dir /-c ..
 )
 ninja check-llvm || exit /b 1
 ninja check-clang || exit /b 1
@@ -431,6 +435,10 @@ ninja check-clangd || exit /b 1
 REM ninja check-flang || exit /b 1
 REM ninja check-mlir || exit /b 1
 REM ninja check-lldb || exit /b 1
+REM EXPERIMENT (perf investigation, not for merge): confirm disk space
+REM immediately before WiX/CPack packaging, the point where the previous
+REM attempt (run 33500315343) hung/died with no script-level error.
+dir /-c ..
 ninja package || exit /b 1
 
 if "%enable-pdb%" == "true" (
