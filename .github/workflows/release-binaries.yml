@@ -48,6 +48,11 @@ on:
           # Windows X64 runner (labels: self-hosted, windows, X64).
           # Revert before any upstream PR.
           - windows-x64-self-hosted
+          # TEMP (fork validation only): route the build to the secondary
+          # (less capable) self-hosted Windows ARM64 runner MARCPE-D3, via
+          # its unique custom label "marcpe-d3". Revert before any upstream
+          # PR.
+          - windows-arm64-self-hosted-marcpe-d3
 
   workflow_call:
     inputs:
@@ -97,7 +102,7 @@ jobs:
     # TEMP (fork validation only): route to the self-hosted Windows ARM64/X64
     # runner when explicitly requested via inputs.runs-on. Revert before any
     # upstream PR.
-    runs-on: ${{ inputs.runs-on == 'windows-arm64-self-hosted' && fromJSON('["gb300-kmelmon"]') || inputs.runs-on == 'windows-x64-self-hosted' && fromJSON('["self-hosted","windows","X64"]') || inputs.runs-on }}
+    runs-on: ${{ inputs.runs-on == 'windows-arm64-self-hosted' && fromJSON('["gb300-kmelmon"]') || inputs.runs-on == 'windows-arm64-self-hosted-marcpe-d3' && fromJSON('["marcpe-d3"]') || inputs.runs-on == 'windows-x64-self-hosted' && fromJSON('["self-hosted","windows","X64"]') || inputs.runs-on }}
     if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'  # TEMP (fork validation only): allow fork dispatch. Revert before any upstream PR
     outputs:
       release-version: ${{ steps.vars.outputs.release-version }}
@@ -257,6 +262,16 @@ jobs:
             # fromJSON() to turn it back into a label list. Revert before
             # any upstream PR.
             build_runs_on='["self-hosted","windows","X64"]'
+            test_runs_on=$build_runs_on
+            ;;
+          windows-arm64-self-hosted-marcpe-d3)
+            # TEMP (fork validation only): route to the secondary (less
+            # capable) self-hosted Windows ARM64 runner MARCPE-D3, via its
+            # unique custom label "marcpe-d3". build-runs-on carries a JSON
+            # array literal here; the consuming jobs' `runs-on` use
+            # fromJSON() to turn it back into a label list. Revert before
+            # any upstream PR.
+            build_runs_on='["marcpe-d3"]'
             test_runs_on=$build_runs_on
             ;;
           macos-14)
@@ -455,8 +470,8 @@ jobs:
         if ($env:WINDOWS_ENHANCED_PGO -eq "true") { $variantArgs += "--enhanced-pgo" }
         Write-Host "Build variant flags: $variantArgs"
         .\build_llvm_release.bat "--$($env:RUNNER_ARCH.ToLower())" --version $env:LLVM_VERSION --local-python --skip-checkout @variantArgs
-        if ($env:INPUTS_RUNS_ON -eq "windows-11-arm" -or $env:INPUTS_RUNS_ON -eq "windows-arm64-self-hosted") {
-          # TEMP (fork validation only): the self-hosted ARM64 runner has no
+        if ($env:INPUTS_RUNS_ON -eq "windows-11-arm" -or $env:INPUTS_RUNS_ON -eq "windows-arm64-self-hosted" -or $env:INPUTS_RUNS_ON -eq "windows-arm64-self-hosted-marcpe-d3") {
+          # TEMP (fork validation only): the self-hosted ARM64 runners have no
           # system-wide zstd either, so reuse the same built zstd.exe binary
           # as the windows-11-arm case. Revert before any upstream PR.
           $zstd = (Get-ChildItem -Recurse -Filter "zstd.exe" | Select-Object -First 1).fullName
@@ -489,7 +504,7 @@ jobs:
       env:
         RELEASE_BINARY_FILENAME: ${{ needs.prepare.outputs.release-binary-filename }}
         RELEASE_BINARY_FILENAME_ZSTD: ${{ needs.prepare.outputs.release-binary-filename-zstd }}
-        ZSTD: ${{ (inputs.runs-on == 'windows-11-arm' || inputs.runs-on == 'windows-arm64-self-hosted') && './zstd.exe' || 'zstd' }}
+        ZSTD: ${{ (inputs.runs-on == 'windows-11-arm' || inputs.runs-on == 'windows-arm64-self-hosted' || inputs.runs-on == 'windows-arm64-self-hosted-marcpe-d3') && './zstd.exe' || 'zstd' }}
       run: |
         xz -dc "$RELEASE_BINARY_FILENAME" | "$ZSTD" --ultra -22 -T0 -o "$RELEASE_BINARY_FILENAME_ZSTD"
 
