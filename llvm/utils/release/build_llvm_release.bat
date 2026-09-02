@@ -371,9 +371,15 @@ REM EXPERIMENT (perf investigation, not for merge): without an explicit
 REM LLVM_PARALLEL_LINK_JOBS, LLVM's CMake auto-caps ThinLTO link
 REM parallelism to 2 jobs ("ThinLTO provides its own parallel linking -
 REM limiting parallel link jobs to 2"), leaving most of the 72 cores idle
-REM during the link-heavy phase. Raise the cap so more links run at once.
+REM during the link-heavy phase on a large runner. A hardcoded higher cap
+REM is unsafe on smaller/lower-RAM machines, where extra concurrent links
+REM just contend for the same cores/memory with no speedup (validated
+REM locally: 2 vs 4 gave near-identical wall time on an 18-core/14.7GB
+REM box). Use LLVM_RAM_PER_LINK_JOB instead, so CMake derives a safe link
+REM job count from actual available RAM and core count
+REM (min(RAM / RAM_per_job, cores)) rather than a fixed value.
 set link_jobs_cmake_flag=
-if "%enable-thinlto%" == "true" set link_jobs_cmake_flag=-DLLVM_PARALLEL_LINK_JOBS=4
+if "%enable-thinlto%" == "true" set link_jobs_cmake_flag=-DLLVM_RAM_PER_LINK_JOB=10000
 cmake -GNinja %cmake_flags% ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
   -DLLVM_ENABLE_RUNTIMES="compiler-rt;openmp" ^
