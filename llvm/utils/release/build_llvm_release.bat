@@ -382,6 +382,54 @@ cmake -GNinja %cmake_flags% ^
   -DPYTHON_HOME=%PYTHONHOME% ^
   %cmake_profile_flags% %llvm_src%\llvm || exit /b 1
 ninja || exit /b 1
+
+:: generate tarball with install toolchain only off
+if "%arch%"=="amd64" (
+  set filename=clang+llvm-%version%-x86_64-pc-windows-msvc
+) else (
+  set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
+)
+REM LLVM_ENABLE_PDB flips the /Zi compile flag, which invalidates every
+REM object file from the build above and forces a full recompile+relink.
+REM That recompile does not depend on the test suite or WiX packaging
+REM below, so kick it off now in a separate build directory and let it
+REM run concurrently with them, hiding most/all of its wall-clock cost
+REM instead of paying for it serially at the end. LLVM_ENABLE_PDB is
+REM still never set for the MSI/WiX "ninja package" build below:
+REM bundling PDBs into the WiX-generated MSI causes CPack/WiX packaging
+REM failures, so PDBs are packaged separately as their own tarball
+REM instead.
+if "%enable-pdb%" == "true" (
+  cd ..
+  mkdir build_%arch%_pdb
+  cd build_%arch%_pdb
+  cmake -GNinja %cmake_flags% ^
+    -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb;flang;mlir" ^
+    -DLLVM_ENABLE_RUNTIMES="compiler-rt;openmp" ^
+    %lto_cmake_flag% ^
+    %common_lldb_flags% ^
+    -DPYTHON_HOME=%PYTHONHOME% ^
+    %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
+    -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
+    -DLLVM_ENABLE_PDB=ON ^
+    %llvm_src%\llvm || exit /b 1
+  del /q ..\pdb_build.done 2>nul
+  REM Use "start /min" (a genuinely separate, minimized console) rather
+  REM than "start /b" (which shares the parent's console/IO handles):
+  REM the background job's own console output can otherwise bleed into
+  REM and interleave with this foreground script's captured output
+  REM despite the ">" file redirection below, consistent with
+  REM console-handle contention between the two concurrently-running
+  REM processes. A dedicated console avoids sharing those handles at all.
+  REM "/v:on" + "^!errorlevel^!" (rather than "%%errorlevel%%") is
+  REM required so ninja's real exit code is captured. Without delayed
+  REM expansion, cmd.exe substitutes %errorlevel% once when the whole
+  REM "cmd1 & cmd2" line is parsed (before ninja even runs), so it would
+  REM always report the pre-existing errorlevel instead of ninja's
+  REM result.
+  start "pdb_build" /min cmd /v:on /c "ninja install > ..\pdb_build.log 2>&1 & echo ^!errorlevel^! > ..\pdb_build.done" < nul
+  cd ..\build_%arch%
+)
 ninja check-llvm || exit /b 1
 ninja check-clang || exit /b 1
 ninja check-lld || exit /b 1
@@ -395,23 +443,14 @@ REM ninja check-mlir || exit /b 1
 REM ninja check-lldb || exit /b 1
 ninja package || exit /b 1
 
-:: generate tarball with install toolchain only off
-if "%arch%"=="amd64" (
-  set filename=clang+llvm-%version%-x86_64-pc-windows-msvc
+if "%enable-pdb%" == "true" (
+  call :wait_for_pdb_build || exit /b 1
 ) else (
-  set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
+  cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
+    -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
+    %llvm_src%\llvm || exit /b 1
+  ninja install || exit /b 1
 )
-REM NOTE: LLVM_ENABLE_PDB is intentionally only set for this toolchain-only
-REM (tarball) reconfigure, not for the MSI/WiX "ninja package" build above:
-REM bundling PDBs into the WiX-generated MSI causes CPack/WiX packaging
-REM failures, so PDBs are packaged separately as their own tarball instead.
-set pdb_cmake_flag=
-if "%enable-pdb%" == "true" set pdb_cmake_flag=-DLLVM_ENABLE_PDB=ON
-cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
-  -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
-  %pdb_cmake_flag% ^
-  %llvm_src%\llvm || exit /b 1
-ninja install || exit /b 1
 :: check llvm_config is present & returns something
 %build_dir%/%filename%/bin/llvm-config.exe --bindir || exit /b 1
 cd ..
@@ -428,6 +467,30 @@ if "%enable-pdb%" == "true" (
 )
 7z a -ttar -so %filename%.tar %filename% | 7z a -txz -si %filename%.tar.xz
 
+exit /b 0
+
+::==============================================================================
+:: Poll for the concurrent PDB build kicked off earlier in this function to
+:: finish, and propagate its exit code. Must be a standalone function (not
+:: an inline goto/label inside a parenthesized if-block) since cmd.exe does
+:: not reliably support jumping to a label defined inside the same
+:: "( ... )" block.
+::==============================================================================
+:wait_for_pdb_build
+if not exist ..\pdb_build.done (
+  ping -n 6 127.0.0.1 >nul
+  goto :wait_for_pdb_build
+)
+REM Use "for /f" rather than "set /p" to read the exit code: "for /f"
+REM tokenizes on whitespace and strips it, whereas "set /p" would take any
+REM trailing spaces/junk in the file literally, breaking the "== 0" check
+REM below even when the underlying build actually succeeded.
+set pdb_build_rc=
+for /f %%r in (..\pdb_build.done) do set pdb_build_rc=%%r
+if not "%pdb_build_rc%" == "0" (
+  type ..\pdb_build.log
+  exit /b 1
+)
 exit /b 0
 
 ::==============================================================================
