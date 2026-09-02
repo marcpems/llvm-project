@@ -97,7 +97,7 @@ jobs:
     # TEMP (fork validation only): route to the self-hosted Windows ARM64/X64
     # runner when explicitly requested via inputs.runs-on. Revert before any
     # upstream PR.
-    runs-on: ${{ inputs.runs-on == 'windows-arm64-self-hosted' && fromJSON('["self-hosted","windows","ARM64"]') || inputs.runs-on == 'windows-x64-self-hosted' && fromJSON('["self-hosted","windows","X64"]') || inputs.runs-on }}
+    runs-on: ${{ inputs.runs-on == 'windows-arm64-self-hosted' && fromJSON('["gb300-kmelmon"]') || inputs.runs-on == 'windows-x64-self-hosted' && fromJSON('["self-hosted","windows","X64"]') || inputs.runs-on }}
     if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'  # TEMP (fork validation only): allow fork dispatch. Revert before any upstream PR
     outputs:
       release-version: ${{ steps.vars.outputs.release-version }}
@@ -239,13 +239,14 @@ jobs:
             test_runs_on=$build_runs_on
             ;;
           windows-arm64-self-hosted)
-            # TEMP (fork validation only): route to the self-hosted Windows
-            # ARM64 runner (labels: self-hosted, windows, ARM64) instead of
-            # the GitHub-hosted windows-11-arm runner. build-runs-on carries
-            # a JSON array literal here; the consuming jobs' `runs-on` use
-            # fromJSON() to turn it back into a label list. Revert before
-            # any upstream PR.
-            build_runs_on='["self-hosted","windows","ARM64"]'
+            # TEMP (fork validation only): route to the specific
+            # GB300-KMELMON self-hosted runner (unique custom label
+            # "gb300-kmelmon") rather than the shared ARM64 label set, since
+            # a second (less capable) self-hosted ARM64 runner now shares
+            # those generic labels. build-runs-on carries a JSON array
+            # literal here; the consuming jobs' `runs-on` use fromJSON() to
+            # turn it back into a label list. Revert before any upstream PR.
+            build_runs_on='["gb300-kmelmon"]'
             test_runs_on=$build_runs_on
             ;;
           windows-x64-self-hosted)
