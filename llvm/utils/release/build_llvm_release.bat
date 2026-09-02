@@ -504,7 +504,20 @@ set python_dir=%1
 
 REM Set Python environment
 if "%local-python%" == "true" (
-  FOR /F "delims=" %%i IN ('where python.exe ^| head -1') DO set python_exe=%%i
+  REM TEMP (fork validation only): the upstream `where python.exe ^| head -1`
+  REM relies on `head`, a Unix/coreutils command not present on stock Windows
+  REM (no Git-for-Windows usr\bin or WSL utilities on PATH). When missing, the
+  REM FOR /F loop silently captures nothing, leaving python_exe undefined, and
+  REM the delayed-expansion substring below then evaluates to the literal
+  REM garbage string "~0,-11" instead of a real directory - poisoning
+  REM -DPython3_ROOT_DIR and breaking CMake's FindPython3 ("Cannot use the
+  REM interpreter") regardless of which Python is actually installed. Take
+  REM just the first `where` result without piping through `head`. Revert
+  REM before any upstream PR (this is a pre-existing upstream bug, unrelated
+  REM to this PR's changes, being worked around here only to unblock fork-side
+  REM CI validation).
+  set python_exe=
+  FOR /F "delims=" %%i IN ('where python.exe') DO if not defined python_exe set python_exe=%%i
   set PYTHONHOME=!python_exe:~0,-11!
 ) else (
   %python_dir%/python.exe --version || exit /b 1
