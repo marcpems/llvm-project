@@ -464,7 +464,11 @@ jobs:
         # (including our self-hosted ones) don't need that trade-off, and
         # --enhanced-pgo/--enable-thinlto/--enable-pdb below are explicit,
         # deliberate opt-ins that should not be silently defeated by it.
-        if ($env:BUILD_RUNS_ON -eq "windows-11-arm") { $variantArgs += "--fast-build" }
+        # TEMP (fork validation only): also apply --fast-build on stock
+        # windows-2022, to test whether it brings that runner under the
+        # 6-hour timeout too (it currently times out at ~14% progress
+        # without this flag). Revert before any upstream PR.
+        if ($env:BUILD_RUNS_ON -eq "windows-11-arm" -or $env:BUILD_RUNS_ON -eq "windows-2022") { $variantArgs += "--fast-build" }
         if ($env:WINDOWS_ENABLE_THINLTO -eq "true") { $variantArgs += "--enable-thinlto" }
         if ($env:WINDOWS_ENABLE_PDB -eq "true") { $variantArgs += "--enable-pdb" }
         if ($env:WINDOWS_ENHANCED_PGO -eq "true") { $variantArgs += "--enhanced-pgo" }
