@@ -389,6 +389,8 @@ if "%arch%"=="amd64" (
 ) else (
   set filename=clang+llvm-%version%-aarch64-pc-windows-msvc
 )
+set main_install_dir=%build_dir%/%filename%
+set pdb_install_dir=%build_dir%/%filename%-pdb-root
 REM LLVM_ENABLE_PDB flips the /Zi compile flag, which invalidates every
 REM object file from the build above and forces a full recompile+relink.
 REM That recompile does not depend on the test suite or WiX packaging
@@ -410,7 +412,7 @@ if "%enable-pdb%" == "true" (
     %common_lldb_flags% ^
     -DPYTHON_HOME=%PYTHONHOME% ^
     %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
-    -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
+    -DCMAKE_INSTALL_PREFIX=%pdb_install_dir% ^
     -DLLVM_ENABLE_PDB=ON ^
     %llvm_src%\llvm || exit /b 1
   del /q ..\pdb_build.done 2>nul
@@ -445,24 +447,29 @@ ninja package || exit /b 1
 
 if "%enable-pdb%" == "true" (
   call :wait_for_pdb_build || exit /b 1
-) else (
-  cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
-    -DCMAKE_INSTALL_PREFIX=%build_dir%/%filename% ^
-    %llvm_src%\llvm || exit /b 1
-  ninja install || exit /b 1
 )
+cmake -GNinja %cmake_flags% %cmake_profile_flags% -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF ^
+  -DCMAKE_INSTALL_PREFIX=%main_install_dir% ^
+  %llvm_src%\llvm || exit /b 1
+ninja install || exit /b 1
 :: check llvm_config is present & returns something
-%build_dir%/%filename%/bin/llvm-config.exe --bindir || exit /b 1
+%main_install_dir%/bin/llvm-config.exe --bindir || exit /b 1
 cd ..
 if "%enable-pdb%" == "true" (
-  :: Package the PDB debug info files produced alongside the install tree
-  :: into their own archive so they can be uploaded as a separate artifact,
-  :: then delete them from the install tree so the main archive command
-  :: below does not compress them a second time.
+  :: Package PDBs from the separate PDB-enabled install tree so the main
+  :: archive can still come from the clean non-PDB install tree above.
   set pdb_filename=%filename%-pdb
-  pushd %filename%
+  REM Use a plain relative directory name here, not the absolute
+  REM %pdb_install_dir% path: on this runner "pushd" fails with
+  REM "The system cannot find the drive specified" when given an
+  REM absolute path that mixes backslash and forward-slash separators
+  REM (as %pdb_install_dir% does, since it's built with a "/" against
+  REM the backslash-based %build_dir%). cwd is already %build_dir%
+  REM (see "cd .." above), and %filename%-pdb-root is a direct child
+  REM of it, so the relative form below is equivalent and avoids the
+  REM issue entirely.
+  pushd %filename%-pdb-root
   7z a -ttar -so ..\!pdb_filename!.tar bin\*.pdb lib\*.pdb | 7z a -txz -si ..\!pdb_filename!.tar.xz
-  del /s /q bin\*.pdb lib\*.pdb
   popd
 )
 7z a -ttar -so %filename%.tar %filename% | 7z a -txz -si %filename%.tar.xz
