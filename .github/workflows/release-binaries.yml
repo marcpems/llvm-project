@@ -48,6 +48,12 @@ on:
           # Windows X64 runner (labels: self-hosted, windows, X64).
           # Revert before any upstream PR.
           - windows-x64-self-hosted
+          # TEMP (fork validation only): pin the build to one specific,
+          # identically-labelled self-hosted X64 runner (matched via its
+          # unique custom label) rather than letting GH pick between them.
+          # Revert before any upstream PR.
+          - marcpe-db1
+          - marcpe-db2
 
   workflow_call:
     inputs:
@@ -257,6 +263,15 @@ jobs:
             # fromJSON() to turn it back into a label list. Revert before
             # any upstream PR.
             build_runs_on='["self-hosted","windows","X64"]'
+            test_runs_on=$build_runs_on
+            ;;
+          marcpe-db1 | marcpe-db2)
+            # TEMP (fork validation only): pin to one specific, identically
+            # labelled self-hosted X64 runner (matched via its unique custom
+            # label) rather than the shared X64 label set, since there are
+            # now two indistinguishable X64 runners. Revert before any
+            # upstream PR.
+            build_runs_on="[\"$INPUTS_RUNS_ON\"]"
             test_runs_on=$build_runs_on
             ;;
           macos-14)
