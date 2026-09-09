@@ -29,11 +29,32 @@ jobs:
           Remove-Item -Recurse -Force "S:\llvm\utils\release\llvm_package_24.0.0\build_amd64\lto.cache" -ErrorAction SilentlyContinue
           Remove-Item -Force "S:\llvm\utils\release\llvm_package_24.0.0\build_amd64\bin\clang.exe" -ErrorAction SilentlyContinue
 
-      - name: Relink bin/clang.exe via real runner job context
-        shell: cmd
+      - name: Relink bin/clang.exe WHILE a targeted Defender scan runs concurrently
+        shell: pwsh
         run: |
-          call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64
-          cd /d "S:\llvm\utils\release\llvm_package_24.0.0\build_amd64"
-          C:\Users\marcpe\AppData\Local\Microsoft\WinGet\Links\ninja.exe -j%LINK_JOBS% bin/clang.exe
-          exit /b %ERRORLEVEL%
+          $buildDir = "S:\llvm\utils\release\llvm_package_24.0.0\build_amd64"
+          $vsdevcmd = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
+          $ninja = "C:\Users\marcpe\AppData\Local\Microsoft\WinGet\Links\ninja.exe"
+
+          Write-Output "Starting concurrent CustomScan targeting $buildDir ..."
+          $scanJob = Start-Job -ScriptBlock {
+            param($p)
+            try { Start-MpScan -ScanType CustomScan -ScanPath $p } catch { Write-Output "Scan error: $_" }
+          } -ArgumentList $buildDir
+
+          Start-Sleep -Seconds 2  # let the scan actually begin touching files first
+
+          $cmdLine = "call `"$vsdevcmd`" -arch=x64 && cd /d `"$buildDir`" && `"$ninja`" -j$env:LINK_JOBS bin/clang.exe"
+          Write-Output "Launching relink: $cmdLine"
+          $p = Start-Process -FilePath "$env:ComSpec" -ArgumentList "/c", $cmdLine -NoNewWindow -PassThru -Wait
+          $exitCode = $p.ExitCode
+          Write-Output "Ninja relink exit code: $exitCode"
+
+          Write-Output "Stopping/cleaning up scan job..."
+          Stop-Job -Job $scanJob -ErrorAction SilentlyContinue
+          Receive-Job -Job $scanJob -ErrorAction SilentlyContinue
+          Remove-Job -Job $scanJob -Force -ErrorAction SilentlyContinue
+          Get-Process -Name MpCmdRun -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) { exit 1 }
 # repro run 2
