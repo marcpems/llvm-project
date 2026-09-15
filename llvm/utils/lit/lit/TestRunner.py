@@ -20,6 +20,7 @@ import lit.ShUtil as ShUtil
 import lit.Test as Test
 import lit.util
 import lit.builtin_commands.cat as builtin_cat
+import lit.builtin_commands.count as builtin_count
 import lit.builtin_commands.diff as builtin_diff
 from lit.BooleanExpression import BooleanExpression
 from lit.ShCommands import Command
@@ -579,7 +580,7 @@ def _executeShCmd(cmd, shenv, results, timeoutHelper):
     stderrTempFiles = []
     opened_files = []
     named_temp_files = []
-    builtin_commands = set(["cat", "diff"])
+    builtin_commands = set(["cat", "diff", "count"])
     builtin_commands_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "builtin_commands"
     )
@@ -595,10 +596,21 @@ def _executeShCmd(cmd, shenv, results, timeoutHelper):
         "ulimit": InprocBuiltins.executeBuiltinUlimit,
         "umask": InprocBuiltins.executeBuiltinUmask,
         ":": InprocBuiltins.executeBuiltinColon,
+        # --- Added: avoid spawning real processes for these trivial,
+        # stateless, always-single-command tools (see
+        # marcpems/llvm-win-wsl-perf-bench for the process-creation-cost
+        # measurement motivating this).
+        "true": InprocBuiltins.executeBuiltinTrue,
+        "false": InprocBuiltins.executeBuiltinFalse,
     }
     pipeline_builtins = {
         "cat": builtin_cat.run,
         "diff": builtin_diff.run,
+        # 'count' is almost always the terminal stage of a pipeline
+        # (RUN: ... | count N), so it needs the pipeline-position-agnostic
+        # in-process machinery (unlike true/false above, which are always
+        # standalone commands and use the simpler inproc_builtins path).
+        "count": builtin_count.run,
     }
     # To avoid deadlock, we use a single stderr stream for piped
     # output. This is null until we have seen some output using
