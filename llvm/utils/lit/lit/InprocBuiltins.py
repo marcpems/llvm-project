@@ -18,6 +18,29 @@ from lit.ShellEnvironment import (
 )
 
 
+def executeBuiltinTrue(cmd, shenv):
+    """executeBuiltinTrue - in-process replacement for the external 'true' tool.
+
+    Always succeeds. Avoids a real CreateProcess call for this trivial,
+    stateless, always-succeeding command (this is disproportionately
+    expensive on Windows relative to Linux; see
+    marcpems/llvm-win-wsl-perf-bench for the underlying measurement).
+    """
+    if len(cmd.args) != 1:
+        raise InternalShellError(cmd, "'true' does not support arguments")
+    return ShellCommandResult(cmd, "", "", 0, False)
+
+
+def executeBuiltinFalse(cmd, shenv):
+    """executeBuiltinFalse - in-process replacement for the external 'false' tool.
+
+    Always fails (exit code 1).
+    """
+    if len(cmd.args) != 1:
+        raise InternalShellError(cmd, "'false' does not support arguments")
+    return ShellCommandResult(cmd, "", "", 1, False)
+
+
 def executeBuiltinCd(cmd, shenv):
     """executeBuiltinCd - Change the current directory."""
     if len(cmd.args) != 2:
