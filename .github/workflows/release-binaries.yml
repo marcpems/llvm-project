@@ -237,6 +237,49 @@ jobs:
       run: |
         echo "LIB=$env:LIB;C:\hostedtoolcache\windows\Python\3.14.6\$($env:RUNNER_ARCH.ToLower())\libs" >> $env:GITHUB_ENV
 
+    # On self-hosted Windows runners, actions/setup-python's tool-cache
+    # directory (RUNNER_TOOL_CACHE) persists across job runs, unlike on
+    # GitHub-hosted runners which start from a clean VM every time. If a
+    # previous run left behind a truncated/corrupted python3.exe (e.g. an
+    # interrupted copy, or an AV product quarantining/blocking it), every
+    # subsequent job silently "succeeds" at the setup-python step but then
+    # fails much later when CMake's FindPython3 tries to actually execute
+    # it ("Cannot run the interpreter ...python3.exe"). Detect that here
+    # and self-heal by regenerating python3.exe from the known-good
+    # python.exe, so a single bad cache entry doesn't permanently wedge
+    # this runner across every future workflow run.
+    - name: Verify / repair cached Python3 interpreter
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $toolDir = Join-Path $env:RUNNER_TOOL_CACHE "Python\3.14.6\$($env:RUNNER_ARCH.ToLower())"
+        $py3 = Join-Path $toolDir 'python3.exe'
+        $py = Join-Path $toolDir 'python.exe'
+
+        $ok = $false
+        if (Test-Path $py3) {
+          try {
+            & $py3 --version *> $null
+            if ($LASTEXITCODE -eq 0) { $ok = $true }
+          } catch {
+            $ok = $false
+          }
+        }
+
+        if (-not $ok) {
+          Write-Host "::warning::python3.exe at $py3 is missing or unusable (tool-cache may be stale/corrupted on this self-hosted runner)."
+          if (Test-Path $py) {
+            & $py --version
+            Write-Host "Regenerating python3.exe from known-good python.exe."
+            Copy-Item -Path $py -Destination $py3 -Force
+            & $py3 --version
+          } else {
+            throw "Neither python3.exe nor python.exe are usable under $toolDir. The tool-cache on this self-hosted runner appears corrupted and needs manual cleanup (delete that directory) before retrying."
+          }
+        } else {
+          Write-Host "python3.exe at $py3 is OK."
+        }
+
     - name: Setup crlf
       if: runner.os == 'Windows'
       run: |
