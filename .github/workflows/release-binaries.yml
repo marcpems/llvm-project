@@ -24,6 +24,7 @@ on:
           - macos-14
           - marcpe-db1
           - marcpe-db2
+          - gb300-hive102
 
   workflow_call:
     inputs:
