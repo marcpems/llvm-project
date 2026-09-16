@@ -214,6 +214,11 @@ jobs:
     needs: prepare
     if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'
     runs-on: ${{ needs.prepare.outputs.build-runs-on }}
+    # Full Windows release builds (which also run check-llvm/check-clang/etc.
+    # via lit inline) can exceed the default 360-minute GitHub Actions job
+    # timeout, especially on Windows where process-spawn overhead dominates
+    # lit's wall-clock time. Raise it so self-hosted runs have room to finish.
+    timeout-minutes: 1440
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
       artifact-id: ${{ steps.artifact-upload.outputs.artifact-id }}
