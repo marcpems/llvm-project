@@ -25,6 +25,7 @@ on:
           - marcpe-db1
           - marcpe-db2
           - gb300-hive102
+          - gb300-kmelmon
 
   workflow_call:
     inputs:
