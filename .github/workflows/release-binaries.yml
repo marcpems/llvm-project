@@ -28,6 +28,7 @@ on:
           - marcpe-db2
           - gb300-hive102
           - gb300-kmelmon
+          - windows-selfhost-arm64-devdrive
 
   workflow_call:
     inputs:
