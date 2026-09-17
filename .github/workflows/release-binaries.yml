@@ -24,6 +24,10 @@ on:
           - macos-14
           - windows-2022
           - windows-11-arm
+          - marcpe-db1
+          - marcpe-db2
+          - gb300-hive102
+          - gb300-kmelmon
 
   workflow_call:
     inputs:
@@ -56,7 +60,10 @@ jobs:
   prepare:
     name: Prepare to build binaries
     runs-on: ${{ inputs.runs-on }}
-    if: github.repository_owner == 'llvm'
+    # Allow this fork (marcpems/llvm-project) to run the workflow on its own
+    # self-hosted runners in addition to the upstream 'llvm' org, so we can
+    # do local A/B performance testing (see marcpems/llvm-win-wsl-perf-bench).
+    if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'
     outputs:
       release-version: ${{ steps.vars.outputs.release-version }}
       ref: ${{ steps.vars.outputs.ref }}
@@ -214,8 +221,13 @@ jobs:
   build-release-package:
     name: "Build Release Package"
     needs: prepare
-    if: github.repository_owner == 'llvm'
+    if: github.repository_owner == 'llvm' || github.repository_owner == 'marcpems'
     runs-on: ${{ needs.prepare.outputs.build-runs-on }}
+    # Full Windows release builds (which also run check-llvm/check-clang/etc.
+    # via lit inline) can exceed the default 360-minute GitHub Actions job
+    # timeout, especially on Windows where process-spawn overhead dominates
+    # lit's wall-clock time. Raise it so self-hosted runs have room to finish.
+    timeout-minutes: 1440
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
       artifact-id: ${{ steps.artifact-upload.outputs.artifact-id }}
@@ -386,7 +398,7 @@ jobs:
       - prepare
       - build-release-package
     if: >-
-      github.event_name != 'pull_request'
+      github.event_name != 'pull_request' && needs.prepare.outputs.upload == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write # For release uploads
