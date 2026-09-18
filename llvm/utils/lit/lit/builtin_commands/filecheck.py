@@ -312,6 +312,44 @@ def match_filecheck(check_text, input_text, prefixes, strict_whitespace, defines
     return True, "OK"
 
 
+def is_supported(argv, cwd):
+    """Pre-flight check: can run() handle this invocation in-process?
+
+    Cheaply re-parses argv and the check file (same cost as run() itself,
+    but without touching stdin/stdout) to decide, *before* committing to
+    the in-process path, whether every directive/flag used is within this
+    prototype's supported subset. Callers should fall back to spawning
+    the real external FileCheck binary whenever this returns False (or
+    raises), so this prototype only ever intercepts invocations it can
+    handle with full fidelity -- correctness always wins over coverage.
+
+    Returns:
+        True if run() should be able to fully and correctly evaluate this
+        invocation in-process; False if it should fall back to the real
+        FileCheck binary (unsupported directive/flag, or the check file
+        could not be read).
+    """
+    import os
+
+    try:
+        prefixes, check_file, input_file, strict_whitespace, allow_empty, defines = (
+            _parse_args(argv)
+        )
+        check_path = (
+            check_file if os.path.isabs(check_file) else os.path.join(cwd, check_file)
+        )
+        with open(check_path, "r", encoding="utf-8", errors="replace") as f:
+            check_text = f.read()
+        _extract_checks(check_text, prefixes)
+        return True
+    except UnsupportedFileCheckUsage:
+        return False
+    except OSError:
+        # Can't read the check file here; let the normal external path
+        # handle it (and produce the usual error) instead of guessing.
+        return False
+
+
 def run(argv, stdin, stdout, stderr, cwd):
     """In-process FileCheck-subset. See module docstring for scope.
 

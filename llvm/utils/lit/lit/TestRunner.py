@@ -22,6 +22,7 @@ import lit.util
 import lit.builtin_commands.cat as builtin_cat
 import lit.builtin_commands.count as builtin_count
 import lit.builtin_commands.diff as builtin_diff
+import lit.builtin_commands.filecheck as builtin_filecheck
 from lit.BooleanExpression import BooleanExpression
 from lit.ShCommands import Command
 from lit.ShellEnvironment import (
@@ -712,7 +713,20 @@ def _executeShCmd(cmd, shenv, results, timeoutHelper):
                 results.append(result)
                 return result.exitCode
 
-            builtin_fn = pipeline_builtins.get(args[0])
+            if args[0] == "FileCheck" and len(args) > 1:
+                # EXPERIMENTAL: only take the in-process fast path when a
+                # cheap pre-parse confirms the check file uses nothing
+                # outside this prototype's supported subset (see
+                # lit/builtin_commands/filecheck.py's module docstring).
+                # Anything else falls straight back to the real, external
+                # FileCheck binary via the normal path below, so this can
+                # never silently change a test's pass/fail outcome.
+                if builtin_filecheck.is_supported(args, cmd_shenv.cwd):
+                    builtin_fn = builtin_filecheck.run
+                else:
+                    builtin_fn = None
+            else:
+                builtin_fn = pipeline_builtins.get(args[0])
             use_inproc = _should_run_inproc(builtin_fn, not_crash, cmd_shenv, shenv)
             if not use_inproc and args[0] in builtin_commands:
                 args.insert(0, sys.executable)
