@@ -62,8 +62,24 @@ jobs:
 
       - name: "Warm build (compile everything check-llvm needs, plus the DLL; not timed)"
         run: |
-          ninja -C build FileCheckEmbedCLI
-          ninja -C build check-llvm
+          # GitHub-hosted Windows runners occasionally fail to execute a tool
+          # immediately after it's linked (STATUS_ENTRYPOINT_NOT_FOUND /
+          # exit 3221225785), most often hit on llvm-min-tblgen.exe when
+          # generating *TargetParserDef.inc. This looks like a transient
+          # AV-scan/filesystem race on the ephemeral runner disk rather than
+          # a real build issue (ninja resumes cleanly on retry). Retry a
+          # few times before giving up.
+          for attempt in 1 2 3 4 5; do
+            if ninja -C build FileCheckEmbedCLI check-llvm; then
+              break
+            fi
+            echo "Warm build attempt $attempt failed, retrying in 10s..."
+            sleep 10
+            if [ "$attempt" = "5" ]; then
+              echo "Warm build failed after $attempt attempts"
+              exit 1
+            fi
+          done
 
       - name: "Baseline: check-llvm with external FileCheck.exe per RUN line"
         run: |
