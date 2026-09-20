@@ -5,22 +5,28 @@ name: Lit In-Process FileCheck DLL Perf Test
 # lit/builtin_commands/filecheck_dll.py). Deliberately does NOT reuse or
 # modify release-binaries.yml's production release build/package pipeline;
 # it does a plain, non-bootstrap `ninja check-llvm` build/test run on a
-# self-hosted GB300 Windows runner, twice in a row against the exact same
-# already-built binaries (so the timing difference is purely lit's own
-# wall-clock behavior, not compile time): once with FileCheck spawned as an
-# external process per RUN line (today's behavior), and once with
-# LIT_FILECHECK_DLL pointing at the FileCheckEmbedCLI.dll built alongside it,
-# so lit calls the same FileCheck engine in-process via ctypes instead.
+# chosen Windows runner, twice in a row against the exact same already-built
+# binaries (so the timing difference is purely lit's own wall-clock
+# behavior, not compile time): once with FileCheck spawned as an external
+# process per RUN line (today's behavior), and once with LIT_FILECHECK_DLL
+# pointing at the FileCheckEmbedCLI.dll built alongside it, so lit calls the
+# same FileCheck engine in-process via ctypes instead.
+#
+# Includes both self-hosted GB300 runners and standard GitHub-hosted
+# windows-11-arm/windows-latest runners so results can be compared across
+# runner types, not just against the GB300 hardware.
 on:
   workflow_dispatch:
     inputs:
       runs-on:
-        description: "Self-hosted GB300 runner to use"
+        description: "Runner to use"
         required: true
         type: choice
         options:
           - gb300-hive102
           - gb300-kmelmon
+          - windows-11-arm
+          - windows-latest
 
 permissions:
   contents: read
@@ -60,19 +66,19 @@ jobs:
 
       - name: "Baseline: check-llvm with external FileCheck.exe per RUN line"
         run: |
-          start=$(date +%s.%N)
+          start=$(date +%s)
           ninja -C build check-llvm
-          end=$(date +%s.%N)
-          echo "BASELINE_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+          end=$(date +%s)
+          echo "BASELINE_SECONDS=$((end - start))" >> "$GITHUB_ENV"
 
       - name: "In-process: check-llvm via ctypes FileCheckMain DLL"
         env:
           LIT_FILECHECK_DLL: ${{ github.workspace }}/build/bin/FileCheckEmbedCLI.dll
         run: |
-          start=$(date +%s.%N)
+          start=$(date +%s)
           ninja -C build check-llvm
-          end=$(date +%s.%N)
-          echo "INPROC_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+          end=$(date +%s)
+          echo "INPROC_SECONDS=$((end - start))" >> "$GITHUB_ENV"
 
       - name: Report results
         run: |
