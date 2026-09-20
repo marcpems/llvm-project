@@ -1,5 +1,7 @@
 add_llvm_utility(FileCheck
   FileCheck.cpp
+
+  PARTIAL_SOURCES_INTENDED
   )
 
 target_link_libraries(FileCheck PRIVATE LLVMFileCheck LLVMSupport)
@@ -14,10 +16,19 @@ target_link_libraries(FileCheck PRIVATE LLVMFileCheck LLVMSupport)
 # CreateProcess cost this avoids is highest, and FileCheckMain's fd-based
 # stdout/stderr capture (os.dup2 in filecheck_dll.py) is only wired up for
 # Windows so far.
+#
+# PARTIAL_SOURCES_INTENDED is required on both targets here because LLVM's
+# build system otherwise enforces exactly one target per directory listing
+# all of that directory's source files; FileCheckCLIEmbed.cpp deliberately
+# is *not* part of the FileCheck target above (it's a separate DLL, not
+# linked into FileCheck.exe).
 if(WIN32)
   add_llvm_library(FileCheckEmbedCLI SHARED
     FileCheckCLIEmbed.cpp
+
+    PARTIAL_SOURCES_INTENDED
     )
 
   target_link_libraries(FileCheckEmbedCLI PRIVATE LLVMFileCheck LLVMSupport)
 endif()
+
