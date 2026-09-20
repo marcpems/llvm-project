@@ -27,6 +27,7 @@ on:
           - gb300-kmelmon
           - windows-11-arm
           - windows-latest
+          - windows-2022
 
 permissions:
   contents: read
@@ -50,19 +51,6 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.14.6'
-
-      - name: "Sanitize PATH (drop JDK/Java dirs to avoid stale api-ms-win-*.dll shadowing)"
-        run: |
-          # GitHub-hosted Windows runners ship several JDKs on PATH; their
-          # bin/ dirs can contain stale api-ms-win-*.dll forwarder DLLs that
-          # the loader may resolve ahead of System32, causing freshly linked
-          # tools (e.g. llvm-min-tblgen.exe) to fail at startup with
-          # STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139). Strip anything under a
-          # java/jdk directory from PATH before building.
-          new_path=$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE '(^|[\\/])(java|jdk)([\\/]|$)' | paste -sd ':' -)
-          echo "PATH=$new_path" >> "$GITHUB_ENV"
-          echo "PATH override written; removed entries:"
-          printf '%s' "$PATH" | tr ':' '\n' | grep -iE '(^|[\\/])(java|jdk)([\\/]|$)' || echo "  (none found)"
 
       - name: Configure
         run: |
