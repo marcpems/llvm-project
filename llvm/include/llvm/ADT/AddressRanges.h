@@ -98,13 +98,14 @@ protected:
       return Ranges.end();
 
     auto It = llvm::partition_point(
-        Ranges, [=](const T &R) { return AddressRange(R).start() <= Start; });
+        Ranges,
+        [=](const T &R) { return llvm::AddressRange(R).start() <= Start; });
 
     if (It == Ranges.begin())
       return Ranges.end();
 
     --It;
-    if (End > AddressRange(*It).end())
+    if (End > llvm::AddressRange(*It).end())
       return Ranges.end();
 
     return It;
