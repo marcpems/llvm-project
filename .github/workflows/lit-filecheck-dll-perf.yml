@@ -27,6 +27,7 @@ on:
           - gb300-kmelmon
           - windows-11-arm
           - windows-latest
+          - windows-2022
 
 permissions:
   contents: read
