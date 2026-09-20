@@ -1,0 +1,90 @@
+name: Lit In-Process FileCheck DLL Perf Test
+
+# Dedicated, self-contained A/B perf test for the in-process FileCheck DLL
+# work (see marcpems/llvm-win-wsl-perf-bench and
+# lit/builtin_commands/filecheck_dll.py). Deliberately does NOT reuse or
+# modify release-binaries.yml's production release build/package pipeline;
+# it does a plain, non-bootstrap `ninja check-llvm` build/test run on a
+# self-hosted GB300 Windows runner, twice in a row against the exact same
+# already-built binaries (so the timing difference is purely lit's own
+# wall-clock behavior, not compile time): once with FileCheck spawned as an
+# external process per RUN line (today's behavior), and once with
+# LIT_FILECHECK_DLL pointing at the FileCheckEmbedCLI.dll built alongside it,
+# so lit calls the same FileCheck engine in-process via ctypes instead.
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: "Self-hosted GB300 runner to use"
+        required: true
+        type: choice
+        options:
+          - gb300-hive102
+          - gb300-kmelmon
+
+permissions:
+  contents: read
+
+jobs:
+  perf-test:
+    name: "check-llvm A/B: external FileCheck.exe vs in-process DLL"
+    if: github.repository_owner == 'marcpems'
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout LLVM
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.14.6'
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -S llvm -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_APPEND_VC_REV=OFF
+
+      - name: "Warm build (compile everything check-llvm needs, plus the DLL; not timed)"
+        run: |
+          ninja -C build FileCheckEmbedCLI
+          ninja -C build check-llvm
+
+      - name: "Baseline: check-llvm with external FileCheck.exe per RUN line"
+        run: |
+          start=$(date +%s.%N)
+          ninja -C build check-llvm
+          end=$(date +%s.%N)
+          echo "BASELINE_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+
+      - name: "In-process: check-llvm via ctypes FileCheckMain DLL"
+        env:
+          LIT_FILECHECK_DLL: ${{ github.workspace }}/build/bin/FileCheckEmbedCLI.dll
+        run: |
+          start=$(date +%s.%N)
+          ninja -C build check-llvm
+          end=$(date +%s.%N)
+          echo "INPROC_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+
+      - name: Report results
+        run: |
+          {
+            echo "## Lit in-process FileCheck DLL perf test"
+            echo ""
+            echo "Suite: \`check-llvm\` on \`${{ inputs.runs-on }}\`"
+            echo ""
+            echo "| Mode | Wall time (s) |"
+            echo "|------|----------------|"
+            echo "| Baseline (external FileCheck.exe per RUN line) | ${BASELINE_SECONDS} |"
+            echo "| In-process (ctypes FileCheckMain DLL, LIT_FILECHECK_DLL set) | ${INPROC_SECONDS} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Baseline:   ${BASELINE_SECONDS}s"
+          echo "In-process: ${INPROC_SECONDS}s"
