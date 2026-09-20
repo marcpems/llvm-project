@@ -13,6 +13,7 @@ import traceback
 
 import lit.Test
 import lit.util
+import lit.builtin_commands.filecheck_dll as builtin_filecheck_dll
 from lit.TestRunner import TestUpdaterException
 
 
@@ -26,6 +27,15 @@ def initialize(lit_config, parallelism_semaphores):
     global _parallelism_semaphores
     _lit_config = lit_config
     _parallelism_semaphores = parallelism_semaphores
+
+    # Pre-load the in-process FileCheck DLL (if LIT_FILECHECK_DLL is set)
+    # once per worker process here, rather than lazily on the first
+    # FileCheck invocation, so the ctypes.CDLL cost is paid once at pool
+    # startup instead of adding latency to whichever test happens to hit
+    # it first. is_supported()/run() cache the loaded handle at module
+    # scope, so this is purely a warm-up call; it's a no-op (and safe to
+    # skip) if the env var isn't set.
+    builtin_filecheck_dll.is_supported(["FileCheck"], os.getcwd())
 
     # We use the following strategy for dealing with Ctrl+C/KeyboardInterrupt in
     # subprocesses created by the multiprocessing.Pool.

@@ -23,6 +23,7 @@ import lit.builtin_commands.cat as builtin_cat
 import lit.builtin_commands.count as builtin_count
 import lit.builtin_commands.diff as builtin_diff
 import lit.builtin_commands.filecheck as builtin_filecheck
+import lit.builtin_commands.filecheck_dll as builtin_filecheck_dll
 from lit.BooleanExpression import BooleanExpression
 from lit.ShCommands import Command
 from lit.ShellEnvironment import (
@@ -714,14 +715,20 @@ def _executeShCmd(cmd, shenv, results, timeoutHelper):
                 return result.exitCode
 
             if args[0] == "FileCheck" and len(args) > 1:
-                # EXPERIMENTAL: only take the in-process fast path when a
-                # cheap pre-parse confirms the check file uses nothing
-                # outside this prototype's supported subset (see
-                # lit/builtin_commands/filecheck.py's module docstring).
-                # Anything else falls straight back to the real, external
-                # FileCheck binary via the normal path below, so this can
-                # never silently change a test's pass/fail outcome.
-                if builtin_filecheck.is_supported(args, cmd_shenv.cwd):
+                # Prefer the DLL-backed path: it wraps the real,
+                # unmodified FileCheck engine (see
+                # lit/builtin_commands/filecheck_dll.py's module
+                # docstring), so unlike the hand-written Python subset
+                # below it has full fidelity with the external binary
+                # for every construct. It only activates when
+                # LIT_FILECHECK_DLL points at a built shared library;
+                # otherwise it's inert and this falls through to the
+                # narrower Python-subset prototype, then to the real
+                # external binary. Either fallback can never silently
+                # change a test's pass/fail outcome.
+                if builtin_filecheck_dll.is_supported(args, cmd_shenv.cwd):
+                    builtin_fn = builtin_filecheck_dll.run
+                elif builtin_filecheck.is_supported(args, cmd_shenv.cwd):
                     builtin_fn = builtin_filecheck.run
                 else:
                     builtin_fn = None
