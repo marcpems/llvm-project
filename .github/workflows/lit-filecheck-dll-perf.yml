@@ -52,13 +52,6 @@ jobs:
         with:
           python-version: '3.14.6'
 
-      - name: "Disable Windows Defender real-time scanning (mitigate STATUS_ENTRYPOINT_NOT_FOUND on freshly-linked exes)"
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Set-MpPreference -DisableRealtimeMonitoring $true
-
       - name: Configure
         run: |
           cmake -G Ninja -S llvm -B build \
@@ -69,13 +62,24 @@ jobs:
 
       - name: "Warm build (compile everything check-llvm needs, plus the DLL; not timed)"
         run: |
-          # GitHub-hosted Windows runners occasionally fail to execute a tool
-          # immediately after it's linked (STATUS_ENTRYPOINT_NOT_FOUND /
-          # exit 3221225785), most often hit on llvm-min-tblgen.exe when
-          # generating *TargetParserDef.inc. This looks like a transient
-          # AV-scan/filesystem race on the ephemeral runner disk rather than
-          # a real build issue (ninja resumes cleanly on retry). Retry a
-          # few times before giving up. Deliberately build only the tool
+          # GitHub-hosted Windows runners have a confirmed, currently-open
+          # runner-images regression (actions/runner-images#14715): the
+          # 20260907 Windows image bumped Service Fabric from 10.1 to 11.7,
+          # which puts C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code
+          # on the machine PATH. That folder ships its own re2.dll (and
+          # potentially other DLLs) that is *newer* than what our build
+          # expects and no longer exports the same symbols, so any freshly
+          # linked tool that resolves a same-named DLL via PATH search
+          # order (rather than finding it next to the exe first) fails to
+          # load with STATUS_ENTRYPOINT_NOT_FOUND (exit 3221225785) --
+          # most often hit on llvm-min-tblgen.exe when generating
+          # *TargetParserDef.inc. Strip the Service Fabric directory from
+          # PATH for this step only (local export, NOT via $GITHUB_ENV --
+          # writing PATH via $GITHUB_ENV on Windows creates a broken
+          # case-variant duplicate that breaks CMake/Ninja entirely).
+          export PATH="$(echo "$PATH" | tr ':' '\n' | grep -vi 'Service Fabric' | tr '\n' ':')"
+          # Retry a few times before giving up, in case anything else
+          # transient is also in play. Deliberately build only the tool
           # dependencies here (NOT the "check-llvm" lit-run target itself),
           # so a retry re-does compiling, not re-running the whole lit
           # suite from scratch.
