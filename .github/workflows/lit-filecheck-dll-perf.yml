@@ -63,31 +63,33 @@ jobs:
       - name: "Warm build (compile everything check-llvm needs, plus the DLL; not timed)"
         run: |
           # GitHub-hosted Windows runners have a confirmed, currently-open
-          # runner-images regression (actions/runner-images#14715): the
-          # 20260907 Windows image bumped Service Fabric from 10.1 to 11.7,
-          # which puts C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code
-          # on the machine PATH. That folder ships its own re2.dll (and
-          # potentially other DLLs) that is *newer* than what our build
-          # expects and no longer exports the same symbols, so any freshly
-          # linked tool that resolves a same-named DLL via PATH search
-          # order (rather than finding it next to the exe first) fails to
-          # load with STATUS_ENTRYPOINT_NOT_FOUND (exit 3221225785) --
-          # most often hit on llvm-min-tblgen.exe when generating
-          # *TargetParserDef.inc. Strip the Service Fabric directory from
-          # PATH for this step only (local export, NOT via $GITHUB_ENV --
-          # writing PATH via $GITHUB_ENV on Windows creates a broken
-          # case-variant duplicate that breaks CMake/Ninja entirely).
-          export PATH="$(echo "$PATH" | tr ':' '\n' | grep -vi 'Service Fabric' | tr '\n' ':')"
-          # Retry a few times before giving up, in case anything else
-          # transient is also in play. Deliberately build only the tool
-          # dependencies here (NOT the "check-llvm" lit-run target itself),
-          # so a retry re-does compiling, not re-running the whole lit
-          # suite from scratch.
+          # runner-images regression (actions/runner-images#14715) in the
+          # same failure-mode family: a system DLL earlier on PATH shadows
+          # one our freshly-linked tool needs, with an incompatible newer
+          # version missing expected exports, causing
+          # STATUS_ENTRYPOINT_NOT_FOUND (exit 3221225785) immediately after
+          # linking -- most often hit on llvm-min-tblgen.exe when
+          # generating *TargetParserDef.inc. GitHub's own repro of that
+          # issue pinned it on a stale re2.dll shipped by a Service Fabric
+          # folder on PATH, but llvm-min-tblgen.exe doesn't link re2, so
+          # our exact culprit DLL is still unconfirmed. Print PE import
+          # diagnostics on first failure to identify it.
           for attempt in 1 2 3 4 5; do
             if ninja -C build FileCheckEmbedCLI llvm-test-depends; then
               break
             fi
             echo "Warm build attempt $attempt failed, retrying in 10s..."
+            if [ "$attempt" = "1" ] && [ -f build/bin/llvm-min-tblgen.exe ]; then
+              echo "--- Diagnostics: llvm-min-tblgen.exe import table ---"
+              DUMPBIN=$(find "/c/Program Files/Microsoft Visual Studio" -iname "dumpbin.exe" 2>/dev/null | grep -i "Hostx64/x64" | head -1)
+              if [ -n "$DUMPBIN" ]; then
+                "$DUMPBIN" /dependents build/bin/llvm-min-tblgen.exe || true
+              else
+                echo "dumpbin.exe not found on this image"
+              fi
+              echo "--- Diagnostics: PATH entries ---"
+              echo "$PATH" | tr ':' '\n'
+            fi
             sleep 10
             if [ "$attempt" = "5" ]; then
               echo "Warm build failed after $attempt attempts"
