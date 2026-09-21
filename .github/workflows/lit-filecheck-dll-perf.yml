@@ -83,7 +83,12 @@ jobs:
               echo "--- Diagnostics: llvm-min-tblgen.exe import table ---"
               DUMPBIN=$(find "/c/Program Files/Microsoft Visual Studio" -iname "dumpbin.exe" 2>/dev/null | grep -i "Hostx64/x64" | head -1)
               if [ -n "$DUMPBIN" ]; then
-                "$DUMPBIN" /dependents build/bin/llvm-min-tblgen.exe || true
+                # MSYS bash mangles a leading "/xxx" as a unix-style path
+                # and rewrites it to a bogus Windows path (e.g.
+                # "/dependents" -> "C:\Program Files\Git\dependents"),
+                # silently breaking the /dependents switch. MSYS_NO_PATHCONV
+                # disables that rewriting for this command only.
+                MSYS_NO_PATHCONV=1 "$DUMPBIN" /dependents build/bin/llvm-min-tblgen.exe || true
               else
                 echo "dumpbin.exe not found on this image"
               fi
