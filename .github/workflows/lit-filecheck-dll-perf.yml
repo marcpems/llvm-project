@@ -52,9 +52,27 @@ jobs:
         with:
           python-version: '3.14.6'
 
+      # Without this, `cmake -G Ninja` running from bash on a GitHub-hosted
+      # Windows runner auto-detects whatever cc/c++ it finds first on PATH,
+      # which is MinGW GCC from Git for Windows' bundled /mingw64/bin (found
+      # ahead of MSVC because we never load vcvars) rather than MSVC. That
+      # produced a MinGW-linked llvm-min-tblgen.exe (importing
+      # libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll instead of
+      # MSVC's CRT), and a mismatched/updated copy of one of those MinGW
+      # runtime DLLs on the current runner image is what's most likely
+      # causing STATUS_ENTRYPOINT_NOT_FOUND. Explicitly set up the MSVC dev
+      # environment so CMake picks up cl.exe instead, matching the known-good
+      # local (clang-cl/MSVC) toolchain.
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+
       - name: Configure
         run: |
           cmake -G Ninja -S llvm -B build \
+            -DCMAKE_C_COMPILER=cl \
+            -DCMAKE_CXX_COMPILER=cl \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_TARGETS_TO_BUILD=X86 \
             -DLLVM_ENABLE_ASSERTIONS=ON \
