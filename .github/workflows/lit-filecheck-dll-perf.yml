@@ -52,6 +52,13 @@ jobs:
         with:
           python-version: '3.14.6'
 
+      - name: "Disable Windows Defender real-time scanning (mitigate STATUS_ENTRYPOINT_NOT_FOUND on freshly-linked exes)"
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+
       - name: Configure
         run: |
           cmake -G Ninja -S llvm -B build \
