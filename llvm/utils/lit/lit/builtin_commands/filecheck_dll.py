@@ -134,6 +134,17 @@ def _call_filecheck_main(dll, argv, stdin_bytes):
     redirected to pipes, and returns (exit_code, stdout_bytes,
     stderr_bytes). Restores the original fds before returning, even if
     the call raises.
+
+    CAVEAT (capacity-limited, not deadlock-proof): stdin is written and
+    stdout/stderr are read back without a concurrent drain thread, relying
+    on _PIPE_BUFFER_SIZE being larger than any realistic input/output for
+    a single FileCheck invocation in the LLVM test suite. If stdin_bytes,
+    or FileCheckMain's combined stdout+stderr output, ever exceeds that
+    buffer, this can deadlock (blocked write with nobody reading, or vice
+    versa). This is a real, currently-unmitigated risk for unusually large
+    inputs/outputs (e.g. -dump-input=always on a huge test), not just a
+    theoretical one -- see perf-review-notes.md in
+    marcpems/llvm-win-wsl-perf-bench for the reviewer discussion.
     """
     n = len(argv)
     argv_c = (ctypes.c_char_p * (n + 1))(
@@ -144,32 +155,45 @@ def _call_filecheck_main(dll, argv, stdin_bytes):
     stdout_r, stdout_w = _make_pipe()
     stderr_r, stderr_w = _make_pipe()
 
-    # Write all of stdin and close the write end up front -- safe without a
-    # background thread because _PIPE_BUFFER_SIZE comfortably exceeds any
-    # realistic stdin size for a FileCheck invocation.
-    os.write(stdin_w, stdin_bytes)
-    os.close(stdin_w)
-
-    saved_fds = [os.dup(0), os.dup(1), os.dup(2)]
     try:
-        os.dup2(stdin_r, 0)
-        os.dup2(stdout_w, 1)
-        os.dup2(stderr_w, 2)
-        rc = dll.FileCheckMain(n, argv_c)
-    finally:
-        for fd, saved in enumerate(saved_fds):
-            os.dup2(saved, fd)
-        for saved in saved_fds:
-            os.close(saved)
-        os.close(stdin_r)
-        os.close(stdout_w)
-        os.close(stderr_w)
+        # Write all of stdin and close the write end up front -- safe
+        # without a background thread because _PIPE_BUFFER_SIZE comfortably
+        # exceeds any realistic stdin size for a FileCheck invocation (see
+        # caveat above).
+        os.write(stdin_w, stdin_bytes)
+        os.close(stdin_w)
+        stdin_w = None
 
-    out = _read_all(stdout_r)
-    err = _read_all(stderr_r)
-    os.close(stdout_r)
-    os.close(stderr_r)
-    return rc, out, err
+        saved_fds = [os.dup(0), os.dup(1), os.dup(2)]
+        try:
+            os.dup2(stdin_r, 0)
+            os.dup2(stdout_w, 1)
+            os.dup2(stderr_w, 2)
+            rc = dll.FileCheckMain(n, argv_c)
+        finally:
+            for fd, saved in enumerate(saved_fds):
+                os.dup2(saved, fd)
+            for saved in saved_fds:
+                os.close(saved)
+            os.close(stdin_r)
+            stdin_r = None
+            os.close(stdout_w)
+            stdout_w = None
+            os.close(stderr_w)
+            stderr_w = None
+
+        out = _read_all(stdout_r)
+        err = _read_all(stderr_r)
+        return rc, out, err
+    finally:
+        # Belt-and-suspenders: make sure every fd we created is closed even
+        # if an exception happened before its normal close point above.
+        for fd in (stdin_r, stdin_w, stdout_r, stdout_w, stderr_r, stderr_w):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 
 def run(argv, stdin, stdout, stderr, cwd):
