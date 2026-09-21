@@ -131,33 +131,71 @@ jobs:
           # failures so the comparison stays apples-to-apples.
           ninja -C build check-llvm || true
 
-      - name: "Baseline: check-llvm with external FileCheck.exe per RUN line"
+      # ABBA design (Baseline, In-process, In-process, Baseline): every prior
+      # A/B run in this investigation always ran Baseline first and
+      # In-process second, with no control for run-order effects (thermal
+      # ramp, VM noisy-neighbor drift, disk/page-cache state accumulating
+      # over a long CI job). A controlled microbenchmark later showed
+      # in-process FileCheck should be *faster*, directly contradicting the
+      # observed full-suite regression -- so this ABBA ordering exists
+      # specifically to separate a genuine mode effect from a position
+      # effect. If "whichever mode runs second is slower" regardless of
+      # which mode that is, the earlier regression was a measurement
+      # artifact, not a real property of the in-process approach.
+      - name: "Run 1/4: Baseline (A)"
         run: |
           start=$(date +%s)
           ninja -C build check-llvm || true
           end=$(date +%s)
-          echo "BASELINE_SECONDS=$((end - start))" >> "$GITHUB_ENV"
+          echo "BASELINE_1_SECONDS=$((end - start))" >> "$GITHUB_ENV"
 
-      - name: "In-process: check-llvm via ctypes FileCheckMain DLL"
+      - name: "Run 2/4: In-process (B)"
         env:
           LIT_FILECHECK_DLL: ${{ github.workspace }}/build/bin/FileCheckEmbedCLI.dll
         run: |
           start=$(date +%s)
           ninja -C build check-llvm || true
           end=$(date +%s)
-          echo "INPROC_SECONDS=$((end - start))" >> "$GITHUB_ENV"
+          echo "INPROC_1_SECONDS=$((end - start))" >> "$GITHUB_ENV"
+
+      - name: "Run 3/4: In-process (B)"
+        env:
+          LIT_FILECHECK_DLL: ${{ github.workspace }}/build/bin/FileCheckEmbedCLI.dll
+        run: |
+          start=$(date +%s)
+          ninja -C build check-llvm || true
+          end=$(date +%s)
+          echo "INPROC_2_SECONDS=$((end - start))" >> "$GITHUB_ENV"
+
+      - name: "Run 4/4: Baseline (A)"
+        run: |
+          start=$(date +%s)
+          ninja -C build check-llvm || true
+          end=$(date +%s)
+          echo "BASELINE_2_SECONDS=$((end - start))" >> "$GITHUB_ENV"
 
       - name: Report results
         run: |
+          BASELINE_AVG=$(( (BASELINE_1_SECONDS + BASELINE_2_SECONDS) / 2 ))
+          INPROC_AVG=$(( (INPROC_1_SECONDS + INPROC_2_SECONDS) / 2 ))
           {
-            echo "## Lit in-process FileCheck DLL perf test"
+            echo "## Lit in-process FileCheck DLL perf test (ABBA order-controlled)"
             echo ""
             echo "Suite: \`check-llvm\` on \`${{ inputs.runs-on }}\`"
             echo ""
-            echo "| Mode | Wall time (s) |"
-            echo "|------|----------------|"
-            echo "| Baseline (external FileCheck.exe per RUN line) | ${BASELINE_SECONDS} |"
-            echo "| In-process (ctypes FileCheckMain DLL, LIT_FILECHECK_DLL set) | ${INPROC_SECONDS} |"
+            echo "| Run order | Mode | Wall time (s) |"
+            echo "|---|------|----------------|"
+            echo "| 1 (A) | Baseline (external FileCheck.exe) | ${BASELINE_1_SECONDS} |"
+            echo "| 2 (B) | In-process (ctypes FileCheckMain DLL) | ${INPROC_1_SECONDS} |"
+            echo "| 3 (B) | In-process (ctypes FileCheckMain DLL) | ${INPROC_2_SECONDS} |"
+            echo "| 4 (A) | Baseline (external FileCheck.exe) | ${BASELINE_2_SECONDS} |"
+            echo ""
+            echo "| Summary | Value |"
+            echo "|---|---|"
+            echo "| Baseline average (runs 1+4) | ${BASELINE_AVG}s |"
+            echo "| In-process average (runs 2+3) | ${INPROC_AVG}s |"
+            echo "| Baseline drift (run4 - run1) | $((BASELINE_2_SECONDS - BASELINE_1_SECONDS))s |"
+            echo "| In-process drift (run3 - run2) | $((INPROC_2_SECONDS - INPROC_1_SECONDS))s |"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Baseline:   ${BASELINE_SECONDS}s"
-          echo "In-process: ${INPROC_SECONDS}s"
+          echo "Baseline runs:   ${BASELINE_1_SECONDS}s, ${BASELINE_2_SECONDS}s (avg ${BASELINE_AVG}s)"
+          echo "In-process runs: ${INPROC_1_SECONDS}s, ${INPROC_2_SECONDS}s (avg ${INPROC_AVG}s)"
