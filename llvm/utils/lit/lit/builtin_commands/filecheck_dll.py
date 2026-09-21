@@ -31,16 +31,29 @@ Safety model:
     call, and is called with a private Errs stream so parse errors return
     an error code instead of calling exit() and killing the whole worker.
   - stdin/stdout/stderr are captured via OS-level fd redirection
-    (os.dup/os.dup2), since the DLL's llvm::outs()/errs()/stdin are plain
-    raw_fd_ostream wrappers around OS fds 1/2/0, not Python objects. Any
-    exception during the call restores the original fds before
-    propagating, so a failure never leaves stdout/stderr silently
+    (os.dup/os.dup2) onto pipes (not temp files -- see _make_pipe()'s
+    docstring for why), since the DLL's llvm::outs()/errs()/stdin are
+    plain raw_fd_ostream wrappers around OS fds 1/2/0, not Python
+    objects. Any exception during the call restores the original fds
+    before propagating, so a failure never leaves stdout/stderr silently
     swapped for the rest of the worker's life.
 """
 
 import ctypes
 import os
-import tempfile
+import sys
+
+if sys.platform == "win32":
+    import _winapi
+    import msvcrt
+
+# Generously large so that even a verbose/failing FileCheck invocation's
+# stdout+stderr (or a large piped stdin) can never fill the pipe's kernel
+# buffer before we read it back -- this deliberately avoids ever needing a
+# background drain thread per call, which would itself add per-call
+# overhead. 4 MiB is far larger than any realistic FileCheck input/output in
+# the LLVM test suite.
+_PIPE_BUFFER_SIZE = 4 * 1024 * 1024
 
 
 class UnsupportedFileCheckUsage(Exception):
@@ -92,9 +105,33 @@ def is_supported(argv, cwd):
     return _get_dll() is not None
 
 
+def _make_pipe():
+    """Creates a pipe (read_fd, write_fd) with a large kernel buffer (see
+    _PIPE_BUFFER_SIZE), avoiding the filesystem entirely -- unlike
+    tempfile-based redirection, a pipe is a pure kernel object with no
+    CreateFile/DeleteFile (or NTFS journaling) involved at all.
+    """
+    if sys.platform == "win32":
+        read_h, write_h = _winapi.CreatePipe(None, _PIPE_BUFFER_SIZE)
+        read_fd = msvcrt.open_osfhandle(read_h, os.O_RDONLY)
+        write_fd = msvcrt.open_osfhandle(write_h, 0)
+        return read_fd, write_fd
+    return os.pipe()
+
+
+def _read_all(fd):
+    chunks = []
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _call_filecheck_main(dll, argv, stdin_bytes):
     """Calls FileCheckMain(argc, argv) with argv's OS-level fd 0/1/2
-    redirected to temp files, and returns (exit_code, stdout_bytes,
+    redirected to pipes, and returns (exit_code, stdout_bytes,
     stderr_bytes). Restores the original fds before returning, even if
     the call raises.
     """
@@ -103,32 +140,35 @@ def _call_filecheck_main(dll, argv, stdin_bytes):
         *[a.encode("utf-8") for a in argv], None
     )
 
-    stdin_f = tempfile.TemporaryFile(mode="w+b")
-    stdout_f = tempfile.TemporaryFile(mode="w+b")
-    stderr_f = tempfile.TemporaryFile(mode="w+b")
-    stdin_f.write(stdin_bytes)
-    stdin_f.flush()
-    stdin_f.seek(0)
+    stdin_r, stdin_w = _make_pipe()
+    stdout_r, stdout_w = _make_pipe()
+    stderr_r, stderr_w = _make_pipe()
+
+    # Write all of stdin and close the write end up front -- safe without a
+    # background thread because _PIPE_BUFFER_SIZE comfortably exceeds any
+    # realistic stdin size for a FileCheck invocation.
+    os.write(stdin_w, stdin_bytes)
+    os.close(stdin_w)
 
     saved_fds = [os.dup(0), os.dup(1), os.dup(2)]
     try:
-        os.dup2(stdin_f.fileno(), 0)
-        os.dup2(stdout_f.fileno(), 1)
-        os.dup2(stderr_f.fileno(), 2)
+        os.dup2(stdin_r, 0)
+        os.dup2(stdout_w, 1)
+        os.dup2(stderr_w, 2)
         rc = dll.FileCheckMain(n, argv_c)
     finally:
         for fd, saved in enumerate(saved_fds):
             os.dup2(saved, fd)
         for saved in saved_fds:
             os.close(saved)
+        os.close(stdin_r)
+        os.close(stdout_w)
+        os.close(stderr_w)
 
-    stdout_f.seek(0)
-    stderr_f.seek(0)
-    out = stdout_f.read()
-    err = stderr_f.read()
-    stdin_f.close()
-    stdout_f.close()
-    stderr_f.close()
+    out = _read_all(stdout_r)
+    err = _read_all(stderr_r)
+    os.close(stdout_r)
+    os.close(stderr_r)
     return rc, out, err
 
 
