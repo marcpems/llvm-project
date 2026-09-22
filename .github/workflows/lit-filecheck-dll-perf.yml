@@ -28,6 +28,11 @@ on:
           - windows-11-arm
           - windows-latest
           - windows-2022
+      disable-defender:
+        description: "Disable Windows Defender real-time scanning before building/testing (perf experiment: AV scanning on every CreateProcess/file-write is a commonly-cited cause of Windows CI being slower than Linux; untested as a performance lever so far in this investigation)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -67,6 +72,13 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+
+      - name: "Disable Windows Defender real-time scanning (perf experiment)"
+        if: ${{ inputs.disable-defender == true }}
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          Get-MpPreference | Select-Object DisableRealtimeMonitoring
 
       - name: Configure
         run: |
@@ -181,7 +193,7 @@ jobs:
           {
             echo "## Lit in-process FileCheck DLL perf test (ABBA order-controlled)"
             echo ""
-            echo "Suite: \`check-llvm\` on \`${{ inputs.runs-on }}\`"
+            echo "Suite: \`check-llvm\` on \`${{ inputs.runs-on }}\` (Defender real-time scanning disabled: \`${{ inputs.disable-defender }}\`)"
             echo ""
             echo "| Run order | Mode | Wall time (s) |"
             echo "|---|------|----------------|"
