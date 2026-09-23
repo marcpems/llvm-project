@@ -113,7 +113,7 @@ jobs:
       - name: Warm build
         run: |
           for attempt in 1 2 3 4 5; do
-            if ninja -C build OptEmbedCLI opt llvm-dis FileCheck count not; then
+            if ninja -C build OptEmbedCLI opt llvm-dis FileCheck count not llvm-config llvm-readobj; then
               break
             fi
             echo "Warm build attempt $attempt failed, retrying in 10s..."
@@ -291,7 +291,7 @@ jobs:
       - name: "Warm build (not timed) -- also builds the persistent-worker prototype target once it exists"
         run: |
           for attempt in 1 2 3 4 5; do
-            if ninja -C build OptEmbedCLI opt llvm-dis FileCheck count not; then
+            if ninja -C build OptEmbedCLI opt llvm-dis FileCheck count not llvm-config llvm-readobj; then
               break
             fi
             echo "Warm build attempt $attempt failed, retrying in 10s..."
