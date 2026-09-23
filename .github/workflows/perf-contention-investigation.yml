@@ -55,6 +55,11 @@ on:
         required: false
         type: string
         default: "3"
+      expected-tests:
+        description: "Expected discovered-test count; fail the run if lit JSON reports a different population"
+        required: false
+        type: string
+        default: "5562"
 
 permissions:
   contents: read
@@ -83,6 +88,30 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+
+      - name: Capture runner diagnostics
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force results | Out-Null
+          $cpu = Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed
+          $sys = Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory,NumberOfProcessors,NumberOfLogicalProcessors
+          $defender = Get-MpComputerStatus | Select-Object AMRunningMode,RealTimeProtectionEnabled,IoavProtectionEnabled,AntivirusEnabled
+          $diag = [PSCustomObject]@{
+            RunnerName = "${{ runner.name }}"
+            RunnerOS = "${{ runner.os }}"
+            RunnerArch = "${{ runner.arch }}"
+            Cpu = $cpu
+            System = $sys
+            Defender = $defender
+          }
+          $diag | ConvertTo-Json -Depth 6 | Set-Content results\runner-diagnostics.json
+          @"
+          ## Runner diagnostics
+
+          \`\`\`json
+          $(Get-Content results\runner-diagnostics.json -Raw)
+          \`\`\`
+          "@ | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: "Apply mitigation: defender-exclusion"
         if: ${{ inputs.mode == 'defender-exclusion' }}
@@ -169,6 +198,16 @@ jobs:
               echo "| $i | ${!varname} |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Analyze per-test JSON results
+        run: |
+          python .github/scripts/analyze_contention_results.py \
+            --results-dir results \
+            --test-root llvm/test \
+            --test-subset "${{ inputs.test-subset }}" \
+            --expected-tests "${{ inputs.expected-tests }}" \
+            --summary-json results/summary.json \
+            --step-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload per-test JSON results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
