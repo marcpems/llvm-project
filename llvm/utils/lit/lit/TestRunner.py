@@ -743,8 +743,12 @@ def _executeShCmd(cmd, shenv, results, timeoutHelper):
                     builtin_fn = None
             elif command_basename == "opt" and len(args) > 0:
                 if builtin_opt_dll.is_supported(args, cmd_shenv.cwd):
+                    builtin_opt_dll.record_dispatch("dll")
                     builtin_fn = builtin_opt_dll.run
                 else:
+                    builtin_opt_dll.record_dispatch(
+                        "spawn", builtin_opt_dll.fallback_reason(args)
+                    )
                     builtin_fn = None
             else:
                 builtin_fn = pipeline_builtins.get(args[0])

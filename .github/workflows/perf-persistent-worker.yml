@@ -1,16 +1,10 @@
 name: Perf - Persistent llc/opt Worker Process (invasive prototype)
 
-# Isolated, deliberately abandonable investigation branch: prototype a
-# persistent, long-lived "worker" process that services MANY llc/opt
-# invocations via lightweight IPC instead of one process-create per
-# invocation (generalizing the earlier in-process FileCheck DLL idea to
-# the two heaviest, most-frequently-spawned CodeGen/Transforms tools).
-# This is explicitly the most invasive lever identified in the wider
-# investigation (see perf-review-notes.md, "llc/opt persistent-worker
-# feasibility check" section) -- kept on its own branch
-# (perf-persistent-worker) so it can be discarded without touching the
-# already-verified, already-committed test-consolidation work on
-# perf-test-consolidation-x86.
+# Isolated, deliberately abandonable investigation branch. The workflow
+# name stays stable for continuity with the broader investigation, but the
+# current branch state is more narrowly an "embed-opt-in-lit" prototype:
+# FileCheck-DLL-style in-process opt reuse inside long-lived lit workers,
+# not a separate IPC daemon and not a validated llc reuse design.
 #
 # Runs entirely on GitHub-hosted runners (both Windows and Linux) so
 # results are not conflated with any other concurrent local-machine or
@@ -42,7 +36,7 @@ on:
         type: string
         default: "CodeGen/X86"
       jobs-count:
-        description: "-j value for the lit run(s)"
+        description: "-j value for the lit run(s); default 12 is treated as auto-detect"
         required: false
         type: string
         default: "12"
@@ -60,7 +54,7 @@ permissions:
 
 jobs:
   push-validation:
-    name: "Persistent worker push validation on ${{ matrix.runner }}"
+    name: "Embed-opt push validation on ${{ matrix.runner }}"
     if: github.event_name == 'push' && github.repository_owner == 'marcpems'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
@@ -131,106 +125,61 @@ jobs:
           OPT_EMBED="build/lib/libOptEmbedCLI.so"
           [ -f "build/bin/OptEmbedCLI.dll" ] && OPT_EMBED="build/bin/OptEmbedCLI.dll"
           [ -f "build/bin/libOptEmbedCLI.so" ] && OPT_EMBED="build/bin/libOptEmbedCLI.so"
-          mkdir -p results
-
-          TEST_SUBSET="llvm/test/Transforms/InstCombine"
-          JOBS=12
-          REPS=3
-
-          "$LIT_BIN" -j "$JOBS" -q "$TEST_SUBSET" || true
-          "$LIT_BIN" -j "$JOBS" -q -o "results/correctness_baseline.json" "$TEST_SUBSET" || true
-          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "$JOBS" -q -o "results/correctness_worker.json" "$TEST_SUBSET" || true
-          python - <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          def load(path):
-              data = json.loads(Path(path).read_text(encoding="utf-8"))
-              tests = data.get("tests", [])
-              return data, {t["name"]: t["code"] for t in tests}
-
-          baseline_data, baseline = load("results/correctness_baseline.json")
-          worker_data, worker = load("results/correctness_worker.json")
-          if set(baseline) != set(worker):
-              print("Discovered-test set mismatch.")
-              print("Missing from worker:", sorted(set(baseline) - set(worker))[:50])
-              print("Extra in worker:", sorted(set(worker) - set(baseline))[:50])
-              sys.exit(1)
-
-          mismatches = [
-              (name, baseline[name], worker[name])
-              for name in sorted(baseline)
-              if baseline[name] != worker[name]
-          ]
-          if mismatches:
-              print("Pass/fail mismatches detected (showing first 50):")
-              for entry in mismatches[:50]:
-                  print(entry)
-              sys.exit(1)
-
-          Path("results/correctness_summary.txt").write_text(
-              "tests=%d\nbaseline_counts=%s\nworker_counts=%s\n"
-              % (
-                  len(baseline),
-                  baseline_data.get("tests_by_code", {}),
-                  worker_data.get("tests_by_code", {}),
-              ),
-              encoding="utf-8",
-          )
-          PY
-
-          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "$JOBS" -q "$TEST_SUBSET" || true
-          printf "rep\tbaseline\tworker\n" > results/throughput.tsv
-          for i in $(seq 1 "$REPS"); do
-            start=$(date +%s.%N)
-            "$LIT_BIN" -j "$JOBS" -q -o "results/throughput_baseline_rep${i}.json" "$TEST_SUBSET" || true
-            end=$(date +%s.%N)
-            baseline=$(echo "$end - $start" | bc)
-
-            start=$(date +%s.%N)
-            LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "$JOBS" -q -o "results/throughput_worker_rep${i}.json" "$TEST_SUBSET" || true
-            end=$(date +%s.%N)
-            worker=$(echo "$end - $start" | bc)
-
-            printf "%s\t%s\t%s\n" "$i" "$baseline" "$worker" >> results/throughput.tsv
-          done
+          python .github/scripts/embed_opt_validation.py \
+            --mode push-validation \
+            --lit-bin "$LIT_BIN" \
+            --opt-embed "$GITHUB_WORKSPACE/$OPT_EMBED" \
+            --test-subset "llvm/test/Transforms/InstCombine" \
+            --results-dir results \
+            --jobs auto \
+            --reps 3
 
       - name: Report push validation results
+        if: always()
         shell: bash
         run: |
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import statistics
+          import json
           from pathlib import Path
 
-          correctness = Path("results/correctness_summary.txt").read_text(encoding="utf-8")
-          rows = []
-          with Path("results/throughput.tsv").open(encoding="utf-8") as f:
-              next(f)
-              for line in f:
-                  rep, baseline, worker = line.rstrip().split("\t")
-                  rows.append((int(rep), float(baseline), float(worker)))
+          if not Path("results/correctness_summary.json").exists():
+              print("## Embed-opt push validation")
+              print()
+              print("No validation summary was produced before the job failed.")
+              raise SystemExit(0)
 
-          baselines = [row[1] for row in rows]
-          workers = [row[2] for row in rows]
-          print("## Persistent worker push validation")
+          correctness = json.loads(Path("results/correctness_summary.json").read_text(encoding="utf-8"))
+          throughput = json.loads(Path("results/throughput_summary.json").read_text(encoding="utf-8"))
+          print("## Embed-opt push validation")
           print()
-          print("Runner: `${{ matrix.runner }}`, subset: `Transforms/InstCombine`, -j: `12`")
+          print("Current branch prototype: `embed-opt-in-lit` (FileCheck-DLL-for-opt), not a persistent llc worker.")
+          print()
+          print(f"Runner: `${{ matrix.runner }}`, subset: `Transforms/InstCombine`, -j: `{correctness['jobs']}`")
           print()
           print("```")
-          print(correctness, end="")
+          print(Path("results/correctness_summary.txt").read_text(encoding="utf-8"), end="")
           print("```")
           print()
-          print("| Rep | Baseline (s) | Worker (s) | Delta (s) |")
+          print("| ABBA quartet | Baseline mean (s) | Worker mean (s) | Delta (s) |")
           print("|---|---:|---:|---:|")
-          for rep, baseline, worker in rows:
-              print(f"| {rep} | {baseline:.6f} | {worker:.6f} | {worker - baseline:.6f} |")
+          for quartet in throughput["quartets"]:
+              baseline = [run["elapsed"] for run in quartet["runs"] if run["kind"] == "baseline"]
+              worker = [run["elapsed"] for run in quartet["runs"] if run["kind"] == "worker"]
+              baseline_mean = sum(baseline) / len(baseline)
+              worker_mean = sum(worker) / len(worker)
+              print(
+                  f"| {quartet['rep']} | {baseline_mean:.6f} | {worker_mean:.6f} | "
+                  f"{worker_mean - baseline_mean:.6f} |"
+              )
           print()
           print("| Summary | Baseline (s) | Worker (s) | Delta (s) |")
           print("|---|---:|---:|---:|")
+          summary = throughput["summary"]
+          print(f"| Mean | {summary['baseline_mean']:.6f} | {summary['worker_mean']:.6f} | {summary['delta_mean']:.6f} |")
+          print(f"| Stdev | {summary['baseline_stdev']:.6f} | {summary['worker_stdev']:.6f} | n/a |")
           print(
-              f"| Mean | {statistics.mean(baselines):.6f} | {statistics.mean(workers):.6f} | "
-              f"{statistics.mean(workers) - statistics.mean(baselines):.6f} |"
+              f"| Range | {summary['baseline_range'][0]:.6f}..{summary['baseline_range'][1]:.6f} | "
+              f"{summary['worker_range'][0]:.6f}..{summary['worker_range'][1]:.6f} | n/a |"
           )
           PY
 
@@ -244,7 +193,7 @@ jobs:
           retention-days: 14
 
   persistent-worker-test:
-    name: "Persistent worker: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'n/a' }} on ${{ github.event_name == 'workflow_dispatch' && inputs.runs-on || 'ubuntu-latest' }}"
+    name: "Embed-opt / persistent-worker branch: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'n/a' }} on ${{ github.event_name == 'workflow_dispatch' && inputs.runs-on || 'ubuntu-latest' }}"
     if: github.event_name == 'workflow_dispatch' && github.repository_owner == 'marcpems'
     runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runs-on || 'ubuntu-latest' }}
     timeout-minutes: 360
@@ -288,7 +237,7 @@ jobs:
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DLLVM_APPEND_VC_REV=OFF
 
-      - name: "Warm build (not timed) -- also builds the persistent-worker prototype target once it exists"
+      - name: "Warm build (not timed) -- builds the current embed-opt prototype"
         run: |
           for attempt in 1 2 3 4 5; do
             if ninja -C build OptEmbedCLI llvm-test-depends; then
@@ -306,22 +255,26 @@ jobs:
         run: |
           LIT_BIN="build/bin/llvm-lit"
           [ -f "build/bin/llvm-lit.exe" ] && LIT_BIN="build/bin/llvm-lit.exe"
-          "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q "llvm/test/${{ inputs.test-subset }}" || true
+          JOBS="${{ inputs.jobs-count }}"
+          if [ -z "$JOBS" ] || [ "$JOBS" = "12" ]; then
+            JOBS=$(python -c "import os; print(os.cpu_count() or 1)")
+          fi
+          "$LIT_BIN" -j "$JOBS" -q "llvm/test/${{ inputs.test-subset }}" || true
 
       - name: "Mode: baseline-only (establish current-process-per-invocation timing, no worker involved)"
         if: ${{ inputs.mode == 'baseline-only' }}
         run: |
           LIT_BIN="build/bin/llvm-lit"
           [ -f "build/bin/llvm-lit.exe" ] && LIT_BIN="build/bin/llvm-lit.exe"
-          mkdir -p results
-          for i in $(seq 1 "${{ inputs.reps }}"); do
-            start=$(date +%s.%N)
-            "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/baseline_rep${i}.json" "llvm/test/${{ inputs.test-subset }}" || true
-            end=$(date +%s.%N)
-            echo "BASELINE_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
-          done
+          python .github/scripts/embed_opt_validation.py \
+            --mode baseline-only \
+            --lit-bin "$LIT_BIN" \
+            --test-subset "llvm/test/${{ inputs.test-subset }}" \
+            --results-dir results \
+            --jobs "${{ inputs.jobs-count }}" \
+            --reps "${{ inputs.reps }}"
 
-      - name: "Mode: worker-correctness (placeholder -- implementing agent: wire up the actual persistent-worker lit hook here, mirroring LIT_FILECHECK_DLL's env-var-triggered opt-in pattern, and assert zero regressions vs baseline)"
+      - name: "Mode: worker-correctness (current branch prototype: embed-opt-in-lit)"
         if: ${{ inputs.mode == 'worker-correctness' }}
         run: |
           LIT_BIN="build/bin/llvm-lit"
@@ -329,54 +282,15 @@ jobs:
           OPT_EMBED="build/lib/libOptEmbedCLI.so"
           [ -f "build/bin/OptEmbedCLI.dll" ] && OPT_EMBED="build/bin/OptEmbedCLI.dll"
           [ -f "build/bin/libOptEmbedCLI.so" ] && OPT_EMBED="build/bin/libOptEmbedCLI.so"
-          mkdir -p results
-          "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/correctness_baseline.json" "llvm/test/${{ inputs.test-subset }}" || true
-          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/correctness_worker.json" "llvm/test/${{ inputs.test-subset }}" || true
-          python - <<'PY'
-          import json
-          import sys
-          from pathlib import Path
+          python .github/scripts/embed_opt_validation.py \
+            --mode worker-correctness \
+            --lit-bin "$LIT_BIN" \
+            --opt-embed "$GITHUB_WORKSPACE/$OPT_EMBED" \
+            --test-subset "llvm/test/${{ inputs.test-subset }}" \
+            --results-dir results \
+            --jobs "${{ inputs.jobs-count }}"
 
-          def load(path):
-              data = json.loads(Path(path).read_text(encoding="utf-8"))
-              tests = data.get("tests", [])
-              return data, {t["name"]: t["code"] for t in tests}
-
-          baseline_data, baseline = load("results/correctness_baseline.json")
-          worker_data, worker = load("results/correctness_worker.json")
-
-          baseline_names = set(baseline)
-          worker_names = set(worker)
-          if baseline_names != worker_names:
-              print("Discovered-test set mismatch.")
-              print("Missing from worker:", sorted(baseline_names - worker_names)[:50])
-              print("Extra in worker:", sorted(worker_names - baseline_names)[:50])
-              sys.exit(1)
-
-          mismatches = [
-              (name, baseline[name], worker[name])
-              for name in sorted(baseline_names)
-              if baseline[name] != worker[name]
-          ]
-          if mismatches:
-              print("Pass/fail mismatches detected (showing first 50):")
-              for entry in mismatches[:50]:
-                  print(entry)
-              sys.exit(1)
-
-          Path("results/correctness_summary.txt").write_text(
-              "tests=%d\nbaseline_counts=%s\nworker_counts=%s\n"
-              % (
-                  len(baseline),
-                  baseline_data.get("tests_by_code", {}),
-                  worker_data.get("tests_by_code", {}),
-              ),
-              encoding="utf-8",
-          )
-          print("Correctness matched for", len(baseline), "tests")
-          PY
-
-      - name: "Mode: worker-throughput (placeholder -- implementing agent: wire up timed reps analogous to baseline-only, but routed through the worker path)"
+      - name: "Mode: worker-throughput (current branch prototype: embed-opt-in-lit)"
         if: ${{ inputs.mode == 'worker-throughput' }}
         run: |
           LIT_BIN="build/bin/llvm-lit"
@@ -384,69 +298,116 @@ jobs:
           OPT_EMBED="build/lib/libOptEmbedCLI.so"
           [ -f "build/bin/OptEmbedCLI.dll" ] && OPT_EMBED="build/bin/OptEmbedCLI.dll"
           [ -f "build/bin/libOptEmbedCLI.so" ] && OPT_EMBED="build/bin/libOptEmbedCLI.so"
-          mkdir -p results
-          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q "llvm/test/${{ inputs.test-subset }}" || true
-          for i in $(seq 1 "${{ inputs.reps }}"); do
-            start=$(date +%s.%N)
-            "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/throughput_baseline_rep${i}.json" "llvm/test/${{ inputs.test-subset }}" || true
-            end=$(date +%s.%N)
-            echo "BASELINE_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
-
-            start=$(date +%s.%N)
-            LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/throughput_worker_rep${i}.json" "llvm/test/${{ inputs.test-subset }}" || true
-            end=$(date +%s.%N)
-            echo "WORKER_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
-          done
+          python .github/scripts/embed_opt_validation.py \
+            --mode worker-throughput \
+            --lit-bin "$LIT_BIN" \
+            --opt-embed "$GITHUB_WORKSPACE/$OPT_EMBED" \
+            --test-subset "llvm/test/${{ inputs.test-subset }}" \
+            --results-dir results \
+            --jobs "${{ inputs.jobs-count }}" \
+            --reps "${{ inputs.reps }}"
 
       - name: Report results
-        if: ${{ inputs.mode == 'baseline-only' }}
+        if: ${{ always() && inputs.mode == 'baseline-only' }}
         shell: bash
         run: |
-          {
-            echo "## Persistent worker investigation: ${{ inputs.mode }}"
-            echo ""
-            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j: \`${{ inputs.jobs-count }}\`"
-            echo ""
-            echo "| Rep | Wall time (s) |"
-            echo "|---|---|"
-            for i in $(seq 1 "${{ inputs.reps }}"); do
-              varname="BASELINE_${i}_SECONDS"
-              echo "| $i | ${!varname} |"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          if not Path("results/baseline_summary.json").exists():
+              print("## Embed-opt branch baseline-only")
+              print()
+              print("No baseline summary was produced before the job failed.")
+              raise SystemExit(0)
+
+          summary = json.loads(Path("results/baseline_summary.json").read_text(encoding="utf-8"))
+          print("## Embed-opt branch baseline-only")
+          print()
+          print("Current branch prototype: `embed-opt-in-lit` (FileCheck-DLL-for-opt), not a persistent llc worker.")
+          print()
+          print(f"Runner: `${{ inputs.runs-on }}`, test subset: `${{ inputs.test-subset }}`, -j: `{summary['jobs']}`")
+          print()
+          print("| Rep | Wall time (s) | Return code |")
+          print("|---|---:|---:|")
+          for run in summary["runs"]:
+              print(f"| {run['rep']} | {run['elapsed']:.6f} | {run['returncode']} |")
+          print()
+          print(f"Mean: `{summary['mean']:.6f}` s, stdev: `{summary['stdev']:.6f}` s, range: `{summary['range'][0]:.6f}`..`{summary['range'][1]:.6f}` s")
+          PY
 
       - name: Report correctness results
-        if: ${{ inputs.mode == 'worker-correctness' }}
+        if: ${{ always() && inputs.mode == 'worker-correctness' }}
         shell: bash
         run: |
-          {
-            echo "## Persistent worker investigation: ${{ inputs.mode }}"
-            echo ""
-            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j: \`${{ inputs.jobs-count }}\`"
-            echo ""
-            echo "\`\`\`"
-            cat results/correctness_summary.txt
-            echo "\`\`\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          if not Path("results/correctness_summary.json").exists():
+              print("## Embed-opt correctness")
+              print()
+              print("No correctness summary was produced before the job failed.")
+              raise SystemExit(0)
+
+          summary = json.loads(Path("results/correctness_summary.json").read_text(encoding="utf-8"))
+          print("## Embed-opt correctness")
+          print()
+          print("Current branch prototype: `embed-opt-in-lit` (FileCheck-DLL-for-opt), not a persistent llc worker.")
+          print()
+          print(f"Runner: `${{ inputs.runs-on }}`, test subset: `${{ inputs.test-subset }}`, -j: `{summary['jobs']}`")
+          print()
+          print("```")
+          print(Path("results/correctness_summary.txt").read_text(encoding="utf-8"), end="")
+          print("```")
+          PY
 
       - name: Report throughput results
-        if: ${{ inputs.mode == 'worker-throughput' }}
+        if: ${{ always() && inputs.mode == 'worker-throughput' }}
         shell: bash
         run: |
-          {
-            echo "## Persistent worker investigation: ${{ inputs.mode }}"
-            echo ""
-            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j: \`${{ inputs.jobs-count }}\`"
-            echo ""
-            echo "| Rep | Baseline (s) | Worker (s) | Delta (s) |"
-            echo "|---|---:|---:|---:|"
-            for i in $(seq 1 "${{ inputs.reps }}"); do
-              base_var="BASELINE_${i}_SECONDS"
-              worker_var="WORKER_${i}_SECONDS"
-              delta=$(python -c "base=float('${!base_var}'); worker=float('${!worker_var}'); print(f'{worker-base:.6f}')")
-              echo "| $i | ${!base_var} | ${!worker_var} | $delta |"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          if not Path("results/throughput_summary.json").exists():
+              print("## Embed-opt throughput")
+              print()
+              print("No throughput summary was produced before the job failed.")
+              raise SystemExit(0)
+
+          throughput = json.loads(Path("results/throughput_summary.json").read_text(encoding="utf-8"))
+          print("## Embed-opt throughput")
+          print()
+          print("Current branch prototype: `embed-opt-in-lit` (FileCheck-DLL-for-opt), not a persistent llc worker.")
+          print()
+          print(f"Runner: `${{ inputs.runs-on }}`, test subset: `${{ inputs.test-subset }}`, -j: `{throughput['jobs']}`")
+          print()
+          print("| ABBA quartet | Baseline mean (s) | Worker mean (s) | Delta (s) |")
+          print("|---|---:|---:|---:|")
+          for quartet in throughput["quartets"]:
+              baseline = [run["elapsed"] for run in quartet["runs"] if run["kind"] == "baseline"]
+              worker = [run["elapsed"] for run in quartet["runs"] if run["kind"] == "worker"]
+              baseline_mean = sum(baseline) / len(baseline)
+              worker_mean = sum(worker) / len(worker)
+              print(
+                  f"| {quartet['rep']} | {baseline_mean:.6f} | {worker_mean:.6f} | "
+                  f"{worker_mean - baseline_mean:.6f} |"
+              )
+          print()
+          summary = throughput["summary"]
+          print(
+              f"Mean baseline `{summary['baseline_mean']:.6f}` s, stdev `{summary['baseline_stdev']:.6f}` s, "
+              f"range `{summary['baseline_range'][0]:.6f}`..`{summary['baseline_range'][1]:.6f}` s"
+          )
+          print()
+          print(
+              f"Mean worker `{summary['worker_mean']:.6f}` s, stdev `{summary['worker_stdev']:.6f}` s, "
+              f"range `{summary['worker_range'][0]:.6f}`..`{summary['worker_range'][1]:.6f}` s"
+          )
+          print()
+          print(f"Mean delta `{summary['delta_mean']:.6f}` s")
+          PY
 
       - name: Upload results
         if: always()

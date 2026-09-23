@@ -447,7 +447,12 @@ optMainCommon(int argc, char **argv,
   std::call_once(InitOnce, initializeOptDriverOnce);
 
   // Enable debug stream buffering.
+  const bool SavedDebugBuffering = EnableDebugBuffering;
   EnableDebugBuffering = true;
+  struct DebugBufferingReset {
+    bool SavedValue;
+    ~DebugBufferingReset() { EnableDebugBuffering = SavedValue; }
+  } RestoreDebugBuffering{SavedDebugBuffering};
 
   if (ResetCLIOptions)
     cl::ResetAllOptionOccurrences();
@@ -459,6 +464,9 @@ optMainCommon(int argc, char **argv,
       reportFatalUsageError(Plugin.takeError());
     PluginList.emplace_back(Plugin.get());
   });
+  struct PassPluginCallbackReset {
+    ~PassPluginCallbackReset() { PassPlugins.setCallback({}); }
+  } ResetPassPluginCallback;
 
   if (!cl::ParseCommandLineOptions(
           argc, argv, "llvm .bc -> .bc modular optimizer and analysis printer\n",
@@ -1011,5 +1019,10 @@ optMain(int argc, char **argv,
 }
 
 int optMainEmbeddedImpl(int argc, char **argv) {
-  return optMainCommon(argc, argv, {}, &errs(), /*ResetCLIOptions=*/true);
+  const int RC =
+      optMainCommon(argc, argv, {}, &errs(), /*ResetCLIOptions=*/true);
+  outs().flush();
+  errs().flush();
+  dbgs().flush();
+  return RC;
 }
