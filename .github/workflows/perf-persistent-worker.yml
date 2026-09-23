@@ -8,7 +8,10 @@ name: Perf - Persistent llc/opt Worker Process (invasive prototype)
 #
 # Runs entirely on GitHub-hosted runners (both Windows and Linux) so
 # results are not conflated with any other concurrent local-machine or
-# contention-investigation work happening in parallel.
+# contention-investigation work happening in parallel. The automatic
+# push trigger used during prototype validation was intentionally removed
+# after the negative result to avoid burning more scratch builds; any
+# future use of this abandoned workflow must be explicit manual dispatch.
 on:
   workflow_dispatch:
     inputs:
@@ -45,9 +48,6 @@ on:
         required: false
         type: string
         default: "3"
-  push:
-    branches:
-      - perf-persistent-worker
 
 permissions:
   contents: read
