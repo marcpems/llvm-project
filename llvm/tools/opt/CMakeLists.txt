@@ -52,3 +52,9 @@ add_llvm_tool(opt
 target_link_libraries(opt PRIVATE LLVMOptDriver)
 
 setup_host_tool(opt OPT opt_exe opt_target)
+
+add_llvm_library(OptEmbedCLI SHARED
+  OptCLIEmbed.cpp
+  PARTIAL_SOURCES_INTENDED
+)
+target_link_libraries(OptEmbedCLI PRIVATE LLVMOptDriver LLVMSupport)

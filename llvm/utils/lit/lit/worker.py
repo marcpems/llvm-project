@@ -14,6 +14,7 @@ import traceback
 import lit.Test
 import lit.util
 import lit.builtin_commands.filecheck_dll as builtin_filecheck_dll
+import lit.builtin_commands.opt_dll as builtin_opt_dll
 from lit.TestRunner import TestUpdaterException
 
 
@@ -36,6 +37,7 @@ def initialize(lit_config, parallelism_semaphores):
     # scope, so this is purely a warm-up call; it's a no-op (and safe to
     # skip) if the env var isn't set.
     builtin_filecheck_dll.is_supported(["FileCheck"], os.getcwd())
+    builtin_opt_dll.is_supported(["opt"], os.getcwd())
 
     # We use the following strategy for dealing with Ctrl+C/KeyboardInterrupt in
     # subprocesses created by the multiprocessing.Pool.

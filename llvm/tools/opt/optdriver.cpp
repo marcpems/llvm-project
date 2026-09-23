@@ -61,6 +61,7 @@
 #include "llvm/Transforms/Utils/Debugify.h"
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <optional>
 using namespace llvm;
 using namespace opt_tool;
@@ -394,21 +395,12 @@ static bool shouldForceLegacyPM() {
   return false;
 }
 
-//===----------------------------------------------------------------------===//
-// main for opt
-//
-extern "C" int
-optMain(int argc, char **argv,
-        ArrayRef<std::function<void(PassBuilder &)>> PassBuilderCallbacks) {
-  // Enable debug stream buffering.
-  EnableDebugBuffering = true;
-
+static void initializeOptDriverOnce() {
   InitializeAllTargets();
   InitializeAllTargetMCs();
   InitializeAllAsmPrinters();
   InitializeAllAsmParsers();
 
-  // Initialize passes
   PassRegistry &Registry = *PassRegistry::getPassRegistry();
   initializeCore(Registry);
   initializeScalarOpts(Registry);
@@ -418,8 +410,6 @@ optMain(int argc, char **argv,
   initializeTransformUtils(Registry);
   initializeInstCombine(Registry);
   initializeTarget(Registry);
-  // For codegen passes, only passes that do IR to IR transformation are
-  // supported.
   initializeExpandIRInstsLegacyPassPass(Registry);
   initializeScalarizeMaskedMemIntrinLegacyPassPass(Registry);
   initializeSelectOptimizePass(Registry);
@@ -443,6 +433,25 @@ optMain(int argc, char **argv,
   initializeReplaceWithVeclibLegacyPass(Registry);
   initializeJMCInstrumenterPass(Registry);
 
+  cl::AddExtraVersionPrinter(sys::printDefaultTargetAndDetectedCPU);
+}
+
+//===----------------------------------------------------------------------===//
+// main for opt
+//
+static int
+optMainCommon(int argc, char **argv,
+              ArrayRef<std::function<void(PassBuilder &)>> PassBuilderCallbacks,
+              raw_ostream *ParseErrs, bool ResetCLIOptions) {
+  static std::once_flag InitOnce;
+  std::call_once(InitOnce, initializeOptDriverOnce);
+
+  // Enable debug stream buffering.
+  EnableDebugBuffering = true;
+
+  if (ResetCLIOptions)
+    cl::ResetAllOptionOccurrences();
+
   SmallVector<PassPlugin, 1> PluginList;
   PassPlugins.setCallback([&](const std::string &PluginPath) {
     auto Plugin = PassPlugin::Load(PluginPath);
@@ -451,11 +460,10 @@ optMain(int argc, char **argv,
     PluginList.emplace_back(Plugin.get());
   });
 
-  // Register the Target and CPU printer for --version.
-  cl::AddExtraVersionPrinter(sys::printDefaultTargetAndDetectedCPU);
-
-  cl::ParseCommandLineOptions(
-      argc, argv, "llvm .bc -> .bc modular optimizer and analysis printer\n");
+  if (!cl::ParseCommandLineOptions(
+          argc, argv, "llvm .bc -> .bc modular optimizer and analysis printer\n",
+          ParseErrs))
+    return 1;
 
   LLVMContext Context;
 
@@ -993,4 +1001,15 @@ optMain(int argc, char **argv,
     ThinLinkOut->keep();
 
   return codegen::MaybeSaveStatistics(OutputFilename, "opt");
+}
+
+extern "C" int
+optMain(int argc, char **argv,
+        ArrayRef<std::function<void(PassBuilder &)>> PassBuilderCallbacks) {
+  return optMainCommon(argc, argv, PassBuilderCallbacks, nullptr,
+                       /*ResetCLIOptions=*/false);
+}
+
+int optMainEmbeddedImpl(int argc, char **argv) {
+  return optMainCommon(argc, argv, {}, &errs(), /*ResetCLIOptions=*/true);
 }

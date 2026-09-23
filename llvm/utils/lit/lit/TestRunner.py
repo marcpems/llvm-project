@@ -24,6 +24,7 @@ import lit.builtin_commands.count as builtin_count
 import lit.builtin_commands.diff as builtin_diff
 import lit.builtin_commands.filecheck as builtin_filecheck
 import lit.builtin_commands.filecheck_dll as builtin_filecheck_dll
+import lit.builtin_commands.opt_dll as builtin_opt_dll
 from lit.BooleanExpression import BooleanExpression
 from lit.ShCommands import Command
 from lit.ShellEnvironment import (
@@ -455,6 +456,13 @@ def _should_run_inproc(
     return builtin_fn is not None and not not_crash and cmd_shenv is shenv
 
 
+def _command_basename(command: str) -> str:
+    command = os.path.basename(command)
+    if command.lower().endswith(".exe"):
+        command = command[:-4]
+    return command.lower()
+
+
 def _make_env_print_fn(env: dict) -> RunFn:
     """Builds a RunFn that writes env's environment as sorted KEY=VALUE lines.
 
@@ -714,7 +722,8 @@ def _executeShCmd(cmd, shenv, results, timeoutHelper):
                 results.append(result)
                 return result.exitCode
 
-            if args[0] == "FileCheck" and len(args) > 1:
+            command_basename = _command_basename(args[0])
+            if command_basename == "filecheck" and len(args) > 1:
                 # Prefer the DLL-backed path: it wraps the real,
                 # unmodified FileCheck engine (see
                 # lit/builtin_commands/filecheck_dll.py's module
@@ -730,6 +739,11 @@ def _executeShCmd(cmd, shenv, results, timeoutHelper):
                     builtin_fn = builtin_filecheck_dll.run
                 elif builtin_filecheck.is_supported(args, cmd_shenv.cwd):
                     builtin_fn = builtin_filecheck.run
+                else:
+                    builtin_fn = None
+            elif command_basename == "opt" and len(args) > 0:
+                if builtin_opt_dll.is_supported(args, cmd_shenv.cwd):
+                    builtin_fn = builtin_opt_dll.run
                 else:
                     builtin_fn = None
             else:

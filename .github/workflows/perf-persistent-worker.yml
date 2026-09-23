@@ -103,15 +103,8 @@ jobs:
 
       - name: "Warm build (not timed) -- also builds the persistent-worker prototype target once it exists"
         run: |
-          # NOTE for the implementing agent: add the new persistent-worker
-          # binary/library target name(s) to this ninja invocation once
-          # created (e.g. `llc-worker` / `opt-worker` / a shared
-          # `ToolWorkerHost` target), the same way FileCheckEmbedCLI was
-          # added for the earlier in-process DLL experiment. Until that
-          # target exists, this step only builds what baseline-only mode
-          # needs so the workflow stays runnable incrementally.
           for attempt in 1 2 3 4 5; do
-            if ninja -C build llvm-test-depends; then
+            if ninja -C build OptEmbedCLI llvm-test-depends; then
               break
             fi
             echo "Warm build attempt $attempt failed, retrying in 10s..."
@@ -144,20 +137,79 @@ jobs:
       - name: "Mode: worker-correctness (placeholder -- implementing agent: wire up the actual persistent-worker lit hook here, mirroring LIT_FILECHECK_DLL's env-var-triggered opt-in pattern, and assert zero regressions vs baseline)"
         if: ${{ inputs.mode == 'worker-correctness' }}
         run: |
-          echo "TODO(agent): implement persistent-worker correctness validation."
-          echo "Must run the SAME test-subset through the worker-backed path and"
-          echo "diff pass/fail counts + names against a same-run baseline pass,"
-          echo "not just report a wall-clock number. Fail this step (non-zero"
-          echo "exit) if any test result differs between baseline and worker mode."
-          exit 1
+          LIT_BIN="build/bin/llvm-lit"
+          [ -f "build/bin/llvm-lit.exe" ] && LIT_BIN="build/bin/llvm-lit.exe"
+          OPT_EMBED="build/lib/libOptEmbedCLI.so"
+          [ -f "build/bin/OptEmbedCLI.dll" ] && OPT_EMBED="build/bin/OptEmbedCLI.dll"
+          [ -f "build/bin/libOptEmbedCLI.so" ] && OPT_EMBED="build/bin/libOptEmbedCLI.so"
+          mkdir -p results
+          "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/correctness_baseline.json" "llvm/test/${{ inputs.test-subset }}" || true
+          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/correctness_worker.json" "llvm/test/${{ inputs.test-subset }}" || true
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          def load(path):
+              data = json.loads(Path(path).read_text(encoding="utf-8"))
+              tests = data.get("tests", [])
+              return data, {t["name"]: t["code"] for t in tests}
+
+          baseline_data, baseline = load("results/correctness_baseline.json")
+          worker_data, worker = load("results/correctness_worker.json")
+
+          baseline_names = set(baseline)
+          worker_names = set(worker)
+          if baseline_names != worker_names:
+              print("Discovered-test set mismatch.")
+              print("Missing from worker:", sorted(baseline_names - worker_names)[:50])
+              print("Extra in worker:", sorted(worker_names - baseline_names)[:50])
+              sys.exit(1)
+
+          mismatches = [
+              (name, baseline[name], worker[name])
+              for name in sorted(baseline_names)
+              if baseline[name] != worker[name]
+          ]
+          if mismatches:
+              print("Pass/fail mismatches detected (showing first 50):")
+              for entry in mismatches[:50]:
+                  print(entry)
+              sys.exit(1)
+
+          Path("results/correctness_summary.txt").write_text(
+              "tests=%d\nbaseline_counts=%s\nworker_counts=%s\n"
+              % (
+                  len(baseline),
+                  baseline_data.get("tests_by_code", {}),
+                  worker_data.get("tests_by_code", {}),
+              ),
+              encoding="utf-8",
+          )
+          print("Correctness matched for", len(baseline), "tests")
+          PY
 
       - name: "Mode: worker-throughput (placeholder -- implementing agent: wire up timed reps analogous to baseline-only, but routed through the worker path)"
         if: ${{ inputs.mode == 'worker-throughput' }}
         run: |
-          echo "TODO(agent): implement persistent-worker throughput measurement,"
-          echo "same rep-count / JSON-output pattern as baseline-only mode, so the"
-          echo "two are directly comparable."
-          exit 1
+          LIT_BIN="build/bin/llvm-lit"
+          [ -f "build/bin/llvm-lit.exe" ] && LIT_BIN="build/bin/llvm-lit.exe"
+          OPT_EMBED="build/lib/libOptEmbedCLI.so"
+          [ -f "build/bin/OptEmbedCLI.dll" ] && OPT_EMBED="build/bin/OptEmbedCLI.dll"
+          [ -f "build/bin/libOptEmbedCLI.so" ] && OPT_EMBED="build/bin/libOptEmbedCLI.so"
+          mkdir -p results
+          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q "llvm/test/${{ inputs.test-subset }}" || true
+          for i in $(seq 1 "${{ inputs.reps }}"); do
+            start=$(date +%s.%N)
+            "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/throughput_baseline_rep${i}.json" "llvm/test/${{ inputs.test-subset }}" || true
+            end=$(date +%s.%N)
+            echo "BASELINE_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+
+            start=$(date +%s.%N)
+            LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/throughput_worker_rep${i}.json" "llvm/test/${{ inputs.test-subset }}" || true
+            end=$(date +%s.%N)
+            echo "WORKER_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+          done
 
       - name: Report results
         if: ${{ inputs.mode == 'baseline-only' }}
@@ -173,6 +225,44 @@ jobs:
             for i in $(seq 1 "${{ inputs.reps }}"); do
               varname="BASELINE_${i}_SECONDS"
               echo "| $i | ${!varname} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report correctness results
+        if: ${{ inputs.mode == 'worker-correctness' }}
+        shell: bash
+        run: |
+          {
+            echo "## Persistent worker investigation: ${{ inputs.mode }}"
+            echo ""
+            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j: \`${{ inputs.jobs-count }}\`"
+            echo ""
+            echo "\`\`\`"
+            cat results/correctness_summary.txt
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report throughput results
+        if: ${{ inputs.mode == 'worker-throughput' }}
+        shell: bash
+        run: |
+          {
+            echo "## Persistent worker investigation: ${{ inputs.mode }}"
+            echo ""
+            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j: \`${{ inputs.jobs-count }}\`"
+            echo ""
+            echo "| Rep | Baseline (s) | Worker (s) | Delta (s) |"
+            echo "|---|---:|---:|---:|"
+            for i in $(seq 1 "${{ inputs.reps }}"); do
+              base_var="BASELINE_${i}_SECONDS"
+              worker_var="WORKER_${i}_SECONDS"
+              delta=$(python - <<PY
+base=float("${!base_var}")
+worker=float("${!worker_var}")
+print(f"{worker-base:.6f}")
+PY
+)
+              echo "| $i | ${!base_var} | ${!worker_var} | $delta |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
