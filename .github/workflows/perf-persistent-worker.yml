@@ -443,12 +443,7 @@ jobs:
             for i in $(seq 1 "${{ inputs.reps }}"); do
               base_var="BASELINE_${i}_SECONDS"
               worker_var="WORKER_${i}_SECONDS"
-              delta=$(python - <<PY
-base=float("${!base_var}")
-worker=float("${!worker_var}")
-print(f"{worker-base:.6f}")
-PY
-)
+              delta=$(python -c "base=float('${!base_var}'); worker=float('${!worker_var}'); print(f'{worker-base:.6f}')")
               echo "| $i | ${!base_var} | ${!worker_var} | $delta |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
