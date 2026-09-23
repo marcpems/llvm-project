@@ -1,0 +1,186 @@
+name: Perf - Persistent llc/opt Worker Process (invasive prototype)
+
+# Isolated, deliberately abandonable investigation branch: prototype a
+# persistent, long-lived "worker" process that services MANY llc/opt
+# invocations via lightweight IPC instead of one process-create per
+# invocation (generalizing the earlier in-process FileCheck DLL idea to
+# the two heaviest, most-frequently-spawned CodeGen/Transforms tools).
+# This is explicitly the most invasive lever identified in the wider
+# investigation (see perf-review-notes.md, "llc/opt persistent-worker
+# feasibility check" section) -- kept on its own branch
+# (perf-persistent-worker) so it can be discarded without touching the
+# already-verified, already-committed test-consolidation work on
+# perf-test-consolidation-x86.
+#
+# Runs entirely on GitHub-hosted runners (both Windows and Linux) so
+# results are not conflated with any other concurrent local-machine or
+# contention-investigation work happening in parallel.
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: "Runner to use"
+        required: true
+        type: choice
+        options:
+          - windows-11-arm
+          - windows-latest
+          - windows-2022
+          - ubuntu-24.04-arm
+          - ubuntu-latest
+      mode:
+        description: "What to validate this run"
+        required: true
+        type: choice
+        options:
+          - baseline-only
+          - worker-correctness
+          - worker-throughput
+      test-subset:
+        description: "lit test subdirectory to use for validation/benchmarking"
+        required: false
+        type: string
+        default: "CodeGen/X86"
+      jobs-count:
+        description: "-j value for the lit run(s)"
+        required: false
+        type: string
+        default: "12"
+      reps:
+        description: "Number of timed repetitions for throughput mode"
+        required: false
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  persistent-worker-test:
+    name: "Persistent worker: ${{ inputs.mode }} on ${{ inputs.runs-on }}"
+    if: github.repository_owner == 'marcpems'
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout LLVM
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.14.6'
+
+      - name: "Setup MSVC environment (Windows only)"
+        if: ${{ runner.os == 'Windows' }}
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+
+      - name: "Configure (Windows)"
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          cmake -G Ninja -S llvm -B build \
+            -DCMAKE_C_COMPILER=cl \
+            -DCMAKE_CXX_COMPILER=cl \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_APPEND_VC_REV=OFF
+
+      - name: "Configure (Linux)"
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          cmake -G Ninja -S llvm -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_APPEND_VC_REV=OFF
+
+      - name: "Warm build (not timed) -- also builds the persistent-worker prototype target once it exists"
+        run: |
+          # NOTE for the implementing agent: add the new persistent-worker
+          # binary/library target name(s) to this ninja invocation once
+          # created (e.g. `llc-worker` / `opt-worker` / a shared
+          # `ToolWorkerHost` target), the same way FileCheckEmbedCLI was
+          # added for the earlier in-process DLL experiment. Until that
+          # target exists, this step only builds what baseline-only mode
+          # needs so the workflow stays runnable incrementally.
+          for attempt in 1 2 3 4 5; do
+            if ninja -C build llvm-test-depends; then
+              break
+            fi
+            echo "Warm build attempt $attempt failed, retrying in 10s..."
+            sleep 10
+            if [ "$attempt" = "5" ]; then
+              echo "Warm build failed after $attempt attempts"
+              exit 1
+            fi
+          done
+
+      - name: "Warm test run (not timed)"
+        run: |
+          LIT_BIN="build/bin/llvm-lit"
+          [ -f "build/bin/llvm-lit.exe" ] && LIT_BIN="build/bin/llvm-lit.exe"
+          "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q "llvm/test/${{ inputs.test-subset }}" || true
+
+      - name: "Mode: baseline-only (establish current-process-per-invocation timing, no worker involved)"
+        if: ${{ inputs.mode == 'baseline-only' }}
+        run: |
+          LIT_BIN="build/bin/llvm-lit"
+          [ -f "build/bin/llvm-lit.exe" ] && LIT_BIN="build/bin/llvm-lit.exe"
+          mkdir -p results
+          for i in $(seq 1 "${{ inputs.reps }}"); do
+            start=$(date +%s.%N)
+            "$LIT_BIN" -j "${{ inputs.jobs-count }}" -q -o "results/baseline_rep${i}.json" "llvm/test/${{ inputs.test-subset }}" || true
+            end=$(date +%s.%N)
+            echo "BASELINE_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+          done
+
+      - name: "Mode: worker-correctness (placeholder -- implementing agent: wire up the actual persistent-worker lit hook here, mirroring LIT_FILECHECK_DLL's env-var-triggered opt-in pattern, and assert zero regressions vs baseline)"
+        if: ${{ inputs.mode == 'worker-correctness' }}
+        run: |
+          echo "TODO(agent): implement persistent-worker correctness validation."
+          echo "Must run the SAME test-subset through the worker-backed path and"
+          echo "diff pass/fail counts + names against a same-run baseline pass,"
+          echo "not just report a wall-clock number. Fail this step (non-zero"
+          echo "exit) if any test result differs between baseline and worker mode."
+          exit 1
+
+      - name: "Mode: worker-throughput (placeholder -- implementing agent: wire up timed reps analogous to baseline-only, but routed through the worker path)"
+        if: ${{ inputs.mode == 'worker-throughput' }}
+        run: |
+          echo "TODO(agent): implement persistent-worker throughput measurement,"
+          echo "same rep-count / JSON-output pattern as baseline-only mode, so the"
+          echo "two are directly comparable."
+          exit 1
+
+      - name: Report results
+        if: ${{ inputs.mode == 'baseline-only' }}
+        shell: bash
+        run: |
+          {
+            echo "## Persistent worker investigation: ${{ inputs.mode }}"
+            echo ""
+            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j: \`${{ inputs.jobs-count }}\`"
+            echo ""
+            echo "| Rep | Wall time (s) |"
+            echo "|---|---|"
+            for i in $(seq 1 "${{ inputs.reps }}"); do
+              varname="BASELINE_${i}_SECONDS"
+              echo "| $i | ${!varname} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: persistent-worker-results-${{ inputs.mode }}-${{ inputs.runs-on }}
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 14
