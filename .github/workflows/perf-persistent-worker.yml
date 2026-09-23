@@ -60,14 +60,14 @@ permissions:
 
 jobs:
   push-validation:
-    name: "Persistent worker push validation on ${{ matrix.runs-on }}"
+    name: "Persistent worker push validation on ${{ matrix.runner }}"
     if: github.event_name == 'push' && github.repository_owner == 'marcpems'
-    runs-on: ${{ matrix.runs-on }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        runs-on:
+        runner:
           - windows-latest
           - ubuntu-latest
     defaults:
@@ -215,7 +215,7 @@ jobs:
           workers = [row[2] for row in rows]
           print("## Persistent worker push validation")
           print()
-          print("Runner: `${{ matrix.runs-on }}`, subset: `Transforms/InstCombine`, -j: `12`")
+          print("Runner: `${{ matrix.runner }}`, subset: `Transforms/InstCombine`, -j: `12`")
           print()
           print("```")
           print(correctness, end="")
@@ -238,7 +238,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: persistent-worker-push-${{ matrix.runs-on }}
+          name: persistent-worker-push-${{ matrix.runner }}
           path: results/
           if-no-files-found: ignore
           retention-days: 14
