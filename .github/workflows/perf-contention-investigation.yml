@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: "12"
+      jobs-sequence:
+        description: "Optional comma-separated exact sequence of effective -j values to run in order within one job (for same-VM dose-response / repeated-control experiments, e.g. 12,6,12)"
+        required: false
+        type: string
+        default: ""
       test-subset:
         description: "lit test subdirectory to benchmark (relative to llvm/test)"
         required: false
@@ -150,38 +155,68 @@ jobs:
             fi
           done
 
-      - name: "Warm test run (not timed, establishes page cache / JIT-like warmup state)"
-        run: |
-          build/bin/llvm-lit.exe -j "${{ inputs.jobs-count }}" -q "llvm/test/${{ inputs.test-subset }}" || true
-
-      - name: "Determine effective -j value for reduced-parallelism / cpu-affinity modes"
-        id: jval
+      - name: "Determine run plan"
+        id: plan
         shell: bash
         run: |
-          case "${{ inputs.mode }}" in
-            reduced-parallelism)
-              # Test at half the requested parallelism to see if the
-              # contention penalty is proportional to worker/core ratio
-              j=$(( (${{ inputs.jobs-count }} + 1) / 2 ))
-              ;;
-            *)
-              j="${{ inputs.jobs-count }}"
-              ;;
-          esac
-          echo "j=$j" >> "$GITHUB_OUTPUT"
-          echo "Effective -j for this run: $j"
+          sequence_input="${{ inputs.jobs-sequence }}"
+          if [ -n "$sequence_input" ]; then
+            plan="$sequence_input"
+            warm_j=$(echo "$sequence_input" | cut -d, -f1 | tr -d ' ')
+          else
+            case "${{ inputs.mode }}" in
+              reduced-parallelism)
+                # Test at half the requested parallelism to see if the
+                # contention penalty is proportional to worker/core ratio
+                j=$(( (${{ inputs.jobs-count }} + 1) / 2 ))
+                ;;
+              *)
+                j="${{ inputs.jobs-count }}"
+                ;;
+            esac
+            plan="$j"
+            warm_j="$j"
+          fi
+          echo "plan=$plan" >> "$GITHUB_OUTPUT"
+          echo "warm_j=$warm_j" >> "$GITHUB_OUTPUT"
+          echo "Execution plan: $plan"
+
+      - name: "Warm test run (not timed, establishes page cache / JIT-like warmup state)"
+        run: |
+          build/bin/llvm-lit.exe -j "${{ steps.plan.outputs.warm_j }}" -q "llvm/test/${{ inputs.test-subset }}" || true
 
       - name: "Run per-test JSON timing (real elapsed times, not just total wall-clock)"
         run: |
           mkdir -p results
-          for i in $(seq 1 "${{ inputs.reps }}"); do
-            start=$(date +%s.%N)
-            build/bin/llvm-lit.exe -j "${{ steps.jval.outputs.j }}" -q \
-              -o "results/rep${i}.json" \
-              "llvm/test/${{ inputs.test-subset }}" || true
-            end=$(date +%s.%N)
-            echo "REP_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
-          done
+          sequence_input="${{ inputs.jobs-sequence }}"
+          if [ -n "$sequence_input" ]; then
+            idx=0
+            OLD_IFS="$IFS"
+            IFS=','
+            for raw_j in $sequence_input; do
+              IFS="$OLD_IFS"
+              idx=$((idx + 1))
+              j=$(echo "$raw_j" | tr -d ' ')
+              start=$(date +%s.%N)
+              build/bin/llvm-lit.exe -j "$j" -q \
+                -o "results/seq${idx}-j${j}.json" \
+                "llvm/test/${{ inputs.test-subset }}" || true
+              end=$(date +%s.%N)
+              echo "SEQ_${idx}_J=${j}" >> "$GITHUB_ENV"
+              echo "SEQ_${idx}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+              IFS=','
+            done
+            IFS="$OLD_IFS"
+          else
+            for i in $(seq 1 "${{ inputs.reps }}"); do
+              start=$(date +%s.%N)
+              build/bin/llvm-lit.exe -j "${{ steps.plan.outputs.warm_j }}" -q \
+                -o "results/rep${i}.json" \
+                "llvm/test/${{ inputs.test-subset }}" || true
+              end=$(date +%s.%N)
+              echo "REP_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+            done
+          fi
 
       - name: Report results
         shell: bash
@@ -189,14 +224,31 @@ jobs:
           {
             echo "## Contention-mitigation test: ${{ inputs.mode }}"
             echo ""
-            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j (requested/effective): \`${{ inputs.jobs-count }}\`/\`${{ steps.jval.outputs.j }}\`"
+            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, requested -j: \`${{ inputs.jobs-count }}\`, execution plan: \`${{ steps.plan.outputs.plan }}\`"
             echo ""
-            echo "| Rep | Wall time (s) |"
-            echo "|---|---|"
-            for i in $(seq 1 "${{ inputs.reps }}"); do
-              varname="REP_${i}_SECONDS"
-              echo "| $i | ${!varname} |"
-            done
+            if [ -n "${{ inputs.jobs-sequence }}" ]; then
+              echo "| Seq | effective -j | Wall time (s) |"
+              echo "|---|---:|---:|"
+              idx=1
+              OLD_IFS="$IFS"
+              IFS=','
+              for _raw in ${{ inputs.jobs-sequence }}; do
+                IFS="$OLD_IFS"
+                jvar="SEQ_${idx}_J"
+                svar="SEQ_${idx}_SECONDS"
+                echo "| $idx | ${!jvar} | ${!svar} |"
+                idx=$((idx + 1))
+                IFS=','
+              done
+              IFS="$OLD_IFS"
+            else
+              echo "| Rep | Wall time (s) |"
+              echo "|---|---|"
+              for i in $(seq 1 "${{ inputs.reps }}"); do
+                varname="REP_${i}_SECONDS"
+                echo "| $i | ${!varname} |"
+              done
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Analyze per-test JSON results
