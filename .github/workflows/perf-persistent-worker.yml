@@ -244,9 +244,9 @@ jobs:
           retention-days: 14
 
   persistent-worker-test:
-    name: "Persistent worker: ${{ inputs.mode }} on ${{ inputs.runs-on }}"
+    name: "Persistent worker: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'n/a' }} on ${{ github.event_name == 'workflow_dispatch' && inputs.runs-on || 'ubuntu-latest' }}"
     if: github.event_name == 'workflow_dispatch' && github.repository_owner == 'marcpems'
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runs-on || 'ubuntu-latest' }}
     timeout-minutes: 360
     defaults:
       run:
