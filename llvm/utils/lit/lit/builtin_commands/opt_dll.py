@@ -89,6 +89,8 @@ def _write_all(fd, data):
         while view:
             written = os.write(fd, view)
             view = view[written:]
+    except OSError:
+        pass
     finally:
         os.close(fd)
 

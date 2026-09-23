@@ -51,14 +51,201 @@ on:
         required: false
         type: string
         default: "3"
+  push:
+    branches:
+      - perf-persistent-worker
 
 permissions:
   contents: read
 
 jobs:
+  push-validation:
+    name: "Persistent worker push validation on ${{ matrix.runs-on }}"
+    if: github.event_name == 'push' && github.repository_owner == 'marcpems'
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        runs-on:
+          - windows-latest
+          - ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout LLVM
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.14.6'
+
+      - name: "Setup MSVC environment (Windows only)"
+        if: ${{ runner.os == 'Windows' }}
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+
+      - name: "Configure (Windows)"
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          cmake -G Ninja -S llvm -B build \
+            -DCMAKE_C_COMPILER=cl \
+            -DCMAKE_CXX_COMPILER=cl \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_APPEND_VC_REV=OFF
+
+      - name: "Configure (Linux)"
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          cmake -G Ninja -S llvm -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_APPEND_VC_REV=OFF
+
+      - name: Warm build
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if ninja -C build OptEmbedCLI llvm-test-depends; then
+              break
+            fi
+            echo "Warm build attempt $attempt failed, retrying in 10s..."
+            sleep 10
+            if [ "$attempt" = "5" ]; then
+              echo "Warm build failed after $attempt attempts"
+              exit 1
+            fi
+          done
+
+      - name: Correctness and throughput validation
+        run: |
+          LIT_BIN="build/bin/llvm-lit"
+          [ -f "build/bin/llvm-lit.exe" ] && LIT_BIN="build/bin/llvm-lit.exe"
+          OPT_EMBED="build/lib/libOptEmbedCLI.so"
+          [ -f "build/bin/OptEmbedCLI.dll" ] && OPT_EMBED="build/bin/OptEmbedCLI.dll"
+          [ -f "build/bin/libOptEmbedCLI.so" ] && OPT_EMBED="build/bin/libOptEmbedCLI.so"
+          mkdir -p results
+
+          TEST_SUBSET="llvm/test/Transforms/InstCombine"
+          JOBS=12
+          REPS=3
+
+          "$LIT_BIN" -j "$JOBS" -q "$TEST_SUBSET" || true
+          "$LIT_BIN" -j "$JOBS" -q -o "results/correctness_baseline.json" "$TEST_SUBSET" || true
+          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "$JOBS" -q -o "results/correctness_worker.json" "$TEST_SUBSET" || true
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          def load(path):
+              data = json.loads(Path(path).read_text(encoding="utf-8"))
+              tests = data.get("tests", [])
+              return data, {t["name"]: t["code"] for t in tests}
+
+          baseline_data, baseline = load("results/correctness_baseline.json")
+          worker_data, worker = load("results/correctness_worker.json")
+          if set(baseline) != set(worker):
+              print("Discovered-test set mismatch.")
+              print("Missing from worker:", sorted(set(baseline) - set(worker))[:50])
+              print("Extra in worker:", sorted(set(worker) - set(baseline))[:50])
+              sys.exit(1)
+
+          mismatches = [
+              (name, baseline[name], worker[name])
+              for name in sorted(baseline)
+              if baseline[name] != worker[name]
+          ]
+          if mismatches:
+              print("Pass/fail mismatches detected (showing first 50):")
+              for entry in mismatches[:50]:
+                  print(entry)
+              sys.exit(1)
+
+          Path("results/correctness_summary.txt").write_text(
+              "tests=%d\nbaseline_counts=%s\nworker_counts=%s\n"
+              % (
+                  len(baseline),
+                  baseline_data.get("tests_by_code", {}),
+                  worker_data.get("tests_by_code", {}),
+              ),
+              encoding="utf-8",
+          )
+          PY
+
+          LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "$JOBS" -q "$TEST_SUBSET" || true
+          printf "rep\tbaseline\tworker\n" > results/throughput.tsv
+          for i in $(seq 1 "$REPS"); do
+            start=$(date +%s.%N)
+            "$LIT_BIN" -j "$JOBS" -q -o "results/throughput_baseline_rep${i}.json" "$TEST_SUBSET" || true
+            end=$(date +%s.%N)
+            baseline=$(echo "$end - $start" | bc)
+
+            start=$(date +%s.%N)
+            LIT_OPT_DLL="$GITHUB_WORKSPACE/$OPT_EMBED" "$LIT_BIN" -j "$JOBS" -q -o "results/throughput_worker_rep${i}.json" "$TEST_SUBSET" || true
+            end=$(date +%s.%N)
+            worker=$(echo "$end - $start" | bc)
+
+            printf "%s\t%s\t%s\n" "$i" "$baseline" "$worker" >> results/throughput.tsv
+          done
+
+      - name: Report push validation results
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import statistics
+          from pathlib import Path
+
+          correctness = Path("results/correctness_summary.txt").read_text(encoding="utf-8")
+          rows = []
+          with Path("results/throughput.tsv").open(encoding="utf-8") as f:
+              next(f)
+              for line in f:
+                  rep, baseline, worker = line.rstrip().split("\t")
+                  rows.append((int(rep), float(baseline), float(worker)))
+
+          baselines = [row[1] for row in rows]
+          workers = [row[2] for row in rows]
+          print("## Persistent worker push validation")
+          print()
+          print("Runner: `${{ matrix.runs-on }}`, subset: `Transforms/InstCombine`, -j: `12`")
+          print()
+          print("```")
+          print(correctness, end="")
+          print("```")
+          print()
+          print("| Rep | Baseline (s) | Worker (s) | Delta (s) |")
+          print("|---|---:|---:|---:|")
+          for rep, baseline, worker in rows:
+              print(f"| {rep} | {baseline:.6f} | {worker:.6f} | {worker - baseline:.6f} |")
+          print()
+          print("| Summary | Baseline (s) | Worker (s) | Delta (s) |")
+          print("|---|---:|---:|---:|")
+          print(
+              f"| Mean | {statistics.mean(baselines):.6f} | {statistics.mean(workers):.6f} | "
+              f"{statistics.mean(workers) - statistics.mean(baselines):.6f} |"
+          )
+          PY
+
+      - name: Upload push validation results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: persistent-worker-push-${{ matrix.runs-on }}
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 14
+
   persistent-worker-test:
     name: "Persistent worker: ${{ inputs.mode }} on ${{ inputs.runs-on }}"
-    if: github.repository_owner == 'marcpems'
+    if: github.event_name == 'workflow_dispatch' && github.repository_owner == 'marcpems'
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 360
     defaults:
