@@ -65,6 +65,11 @@ on:
         required: false
         type: string
         default: "5562"
+      build-targets:
+        description: "Optional explicit Ninja target list for the warm build. Leave empty to use the workflow's subset-based default."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -118,6 +123,32 @@ jobs:
           \`\`\`
           "@ | Add-Content $env:GITHUB_STEP_SUMMARY
 
+      - name: "Determine warm-build target set"
+        id: build_targets
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.build-targets }}" ]; then
+            targets="${{ inputs.build-targets }}"
+          else
+            case "${{ inputs.test-subset }}" in
+              CodeGen/X86)
+                # Build only the tools referenced by llvm/test/CodeGen/X86
+                # plus llvm-config for lit feature setup. This keeps the
+                # unmeasured warm-build prerequisite from dominating hosted
+                # experiment turnaround.
+                targets="FileCheck count llvm-config not split-file llc opt llvm-as llvm-dwarfdump llvm-mc llvm-objdump llvm-profdata llvm-readelf llvm-readobj"
+                ;;
+              *)
+                targets="llvm-test-depends"
+                ;;
+            esac
+          fi
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          {
+            echo ""
+            echo "Warm-build targets: \`$targets\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: "Apply mitigation: defender-exclusion"
         if: ${{ inputs.mode == 'defender-exclusion' }}
         shell: pwsh
@@ -144,7 +175,7 @@ jobs:
       - name: "Warm build (not timed)"
         run: |
           for attempt in 1 2 3 4 5; do
-            if ninja -C build llvm-test-depends; then
+            if ninja -C build ${{ steps.build_targets.outputs.targets }}; then
               break
             fi
             echo "Warm build attempt $attempt failed, retrying in 10s..."
