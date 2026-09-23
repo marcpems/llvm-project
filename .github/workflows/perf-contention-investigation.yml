@@ -1,0 +1,178 @@
+name: Perf - Windows Parallel Contention Investigation
+
+# Isolated, self-contained investigation into a newly-discovered finding:
+# real (non-synthetic) CodeGen/X86 test files that are floor-cost-dominated
+# (single RUN line, <30 lines) show a ~3x wall-clock inflation on Windows
+# under real `-j12` lit parallelism compared to their own isolated/serial
+# per-test cost, whereas the same file population on Linux (WSL2) shows
+# no such inflation. This does NOT appear in a synthetic `llc.exe --version`
+# 12-way spawn-throughput test (which only showed ~40% scaling loss on both
+# platforms) -- i.e. real test processes (real file I/O, real memory
+# footprint, Defender-scanned file access) suffer something the trivial
+# spawn-throughput test did not capture. See perf-review-notes.md
+# "CORRECTION: the 135.4ms Windows / 137.2ms Linux..." entry for the full
+# derivation.
+#
+# This workflow is a harness/toolkit for that investigation, deliberately
+# left extensible: the "mode" input selects which mitigation hypothesis to
+# test for a given run, so new candidates can be added as new `case` arms
+# without restructuring the whole file. Runs entirely on GitHub-hosted
+# runners so results are not conflated with any other concurrent local-
+# machine or persistent-worker investigation.
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: "Runner to use"
+        required: true
+        type: choice
+        options:
+          - windows-11-arm
+          - windows-latest
+          - windows-2022
+      mode:
+        description: "Contention-mitigation hypothesis to test"
+        required: true
+        type: choice
+        options:
+          - baseline
+          - defender-exclusion
+          - reduced-parallelism
+          - cpu-affinity-pinned
+          - process-priority-normal
+      jobs-count:
+        description: "-j value for the lit run(s) (baseline production default is 12; used to test reduced-parallelism hypothesis or to match a specific runner's core count)"
+        required: false
+        type: string
+        default: "12"
+      test-subset:
+        description: "lit test subdirectory to benchmark (relative to llvm/test)"
+        required: false
+        type: string
+        default: "CodeGen/X86"
+      reps:
+        description: "Number of timed repetitions to run (alternating not needed here since each run is a single mode; use >=3 for a defensible mean/stdev)"
+        required: false
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  contention-test:
+    name: "Contention investigation: ${{ inputs.mode }} on ${{ inputs.runs-on }}"
+    if: github.repository_owner == 'marcpems'
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout LLVM
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.14.6'
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+
+      - name: "Apply mitigation: defender-exclusion"
+        if: ${{ inputs.mode == 'defender-exclusion' }}
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Get-MpPreference | Select-Object ExclusionPath
+
+      - name: "Apply mitigation: process-priority-normal (documents runner's default priority class as a baseline reference)"
+        if: ${{ inputs.mode == 'process-priority-normal' }}
+        shell: pwsh
+        run: |
+          Get-Process -Id $PID | Select-Object PriorityClass
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -S llvm -B build \
+            -DCMAKE_C_COMPILER=cl \
+            -DCMAKE_CXX_COMPILER=cl \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_APPEND_VC_REV=OFF
+
+      - name: "Warm build (not timed)"
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if ninja -C build llvm-test-depends; then
+              break
+            fi
+            echo "Warm build attempt $attempt failed, retrying in 10s..."
+            sleep 10
+            if [ "$attempt" = "5" ]; then
+              echo "Warm build failed after $attempt attempts"
+              exit 1
+            fi
+          done
+
+      - name: "Warm test run (not timed, establishes page cache / JIT-like warmup state)"
+        run: |
+          build/bin/llvm-lit.exe -j "${{ inputs.jobs-count }}" -q "llvm/test/${{ inputs.test-subset }}" || true
+
+      - name: "Determine effective -j value for reduced-parallelism / cpu-affinity modes"
+        id: jval
+        shell: bash
+        run: |
+          case "${{ inputs.mode }}" in
+            reduced-parallelism)
+              # Test at half the requested parallelism to see if the
+              # contention penalty is proportional to worker/core ratio
+              j=$(( (${{ inputs.jobs-count }} + 1) / 2 ))
+              ;;
+            *)
+              j="${{ inputs.jobs-count }}"
+              ;;
+          esac
+          echo "j=$j" >> "$GITHUB_OUTPUT"
+          echo "Effective -j for this run: $j"
+
+      - name: "Run per-test JSON timing (real elapsed times, not just total wall-clock)"
+        run: |
+          mkdir -p results
+          for i in $(seq 1 "${{ inputs.reps }}"); do
+            start=$(date +%s.%N)
+            build/bin/llvm-lit.exe -j "${{ steps.jval.outputs.j }}" -q \
+              -o "results/rep${i}.json" \
+              "llvm/test/${{ inputs.test-subset }}" || true
+            end=$(date +%s.%N)
+            echo "REP_${i}_SECONDS=$(echo "$end - $start" | bc)" >> "$GITHUB_ENV"
+          done
+
+      - name: Report results
+        shell: bash
+        run: |
+          {
+            echo "## Contention-mitigation test: ${{ inputs.mode }}"
+            echo ""
+            echo "Runner: \`${{ inputs.runs-on }}\`, test subset: \`${{ inputs.test-subset }}\`, -j (requested/effective): \`${{ inputs.jobs-count }}\`/\`${{ steps.jval.outputs.j }}\`"
+            echo ""
+            echo "| Rep | Wall time (s) |"
+            echo "|---|---|"
+            for i in $(seq 1 "${{ inputs.reps }}"); do
+              varname="REP_${i}_SECONDS"
+              echo "| $i | ${!varname} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload per-test JSON results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: contention-results-${{ inputs.mode }}-${{ inputs.runs-on }}
+          path: results/
+          retention-days: 14
