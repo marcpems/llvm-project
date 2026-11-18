@@ -28,6 +28,7 @@ jobs:
             .github
             compiler-rt
             llvm
+            libc
             cmake
             third-party
       - uses: actions/setup-python@v5
