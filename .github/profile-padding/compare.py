@@ -294,7 +294,7 @@ def main():
             )
             extra = [f"-Dappend_target_cflags=--target={triple} --ld-path=\"{linker}\""] if linker else []
             suite_code = run([sys.executable, root / "llvm/utils/lit/lit.py",
-                              "-v", "-j", args.jobs, "--timeout=90",
+                              "-v", "-j", args.jobs,
                               "-o", logs / "lit.json", *extra, wrapper],
                              logs / "suite.log", check=False)
             tests = json.loads((logs / "lit.json").read_text())["tests"]
