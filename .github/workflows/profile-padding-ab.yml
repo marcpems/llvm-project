@@ -1,0 +1,68 @@
+name: Profile padding before-after validation
+
+on:
+  push:
+    branches: [validation/profile-padding-ab]
+    paths:
+      - .github/profile-padding/**
+      - .github/workflows/profile-padding-ab.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github
+            compiler-rt
+            llvm
+            cmake
+            third-party
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Fetch baseline runtime source
+        run: git fetch --depth=1 origin 0e82f6c20bba329eead791dd3cc75c5f71624885 f25e7ef948a05e0de2d4ec11843956be6ffdf950
+      - name: Compare runtimes on Unix
+        if: runner.os != 'Windows'
+        run: python .github/profile-padding/compare.py --work "$RUNNER_TEMP/profile-padding-ab"
+      - name: Compare runtimes on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ tools were not found.' }
+          $native = & $env:ComSpec /d /s /c "call `"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'Developer environment setup failed.' }
+          foreach ($line in $native) {
+            $entry = $line -split '=', 2
+            if ($entry.Count -eq 2 -and $entry[0]) {
+              [Environment]::SetEnvironmentVariable($entry[0], $entry[1], 'Process')
+            }
+          }
+          python .github\profile-padding\compare.py --work "$env:RUNNER_TEMP\profile-padding-ab"
+          exit $LASTEXITCODE
+      - name: Retain comparison results and failure logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-padding-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/profile-padding-ab/results.json
+            ${{ runner.temp }}/profile-padding-ab/*.log
+            ${{ runner.temp }}/profile-padding-ab/before
+            ${{ runner.temp }}/profile-padding-ab/after
+          retention-days: 14
