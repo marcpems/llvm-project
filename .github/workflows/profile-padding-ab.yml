@@ -7,6 +7,11 @@ on:
       - .github/profile-padding/**
       - .github/workflows/profile-padding-ab.yml
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        default: validation/profile-padding-ab
 
 permissions:
   contents: read
@@ -23,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           sparse-checkout: |
             .github
             compiler-rt

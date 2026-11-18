@@ -105,7 +105,7 @@ def configure_runtime(root, build, tools, llvm_cmake, triple, logs, jobs):
         f"-DLLVM_CMAKE_DIR={llvm_cmake}", "-DLLVM_OMIT_EXPORTS_FROM_CONFIG=ON",
         f"-DLLVM_EXTERNAL_LIT={root / 'llvm/utils/lit/lit.py'}",
         f"-DCOMPILER_RT_TEST_COMPILER={tools / 'bin' / ('clang.exe' if windows else 'clang')}",
-        f"-DPython3_EXECUTABLE={sys.executable}",
+        f"-DPython3_EXECUTABLE:FILEPATH={sys.executable}",
         "-DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON", "-DCOMPILER_RT_INCLUDE_TESTS=ON",
         "-DCOMPILER_RT_BUILD_PROFILE=ON",
     ]
@@ -136,7 +136,7 @@ def prepare_helpers(root, tools, work, jobs, supplied_cmake):
              f"-DCMAKE_CXX_COMPILER={cxx}", "-DLLVM_TARGETS_TO_BUILD=Native",
              "-DLLVM_INCLUDE_BENCHMARKS=OFF", "-DLLVM_ENABLE_ZLIB=OFF",
              "-DLLVM_ENABLE_ZSTD=OFF", "-DLLVM_ENABLE_LIBXML2=OFF",
-             f"-DPython3_EXECUTABLE={sys.executable}"], work / "helpers-configure.log")
+             f"-DPython3_EXECUTABLE:FILEPATH={sys.executable}"], work / "helpers-configure.log")
         if missing:
             run(["cmake", "--build", build, "--target", *missing, "--parallel", jobs],
                 work / "helpers-build.log")
@@ -297,6 +297,8 @@ def main():
                               "-v", "-j", args.jobs,
                               "-o", logs / "lit.json", *extra, wrapper],
                              logs / "suite.log", check=False)
+            if not (logs / "lit.json").exists():
+                raise RuntimeError((logs / "suite.log").read_text())
             tests = json.loads((logs / "lit.json").read_text())["tests"]
             report["phases"][phase] = {
                 "suite_exit": suite_code,
