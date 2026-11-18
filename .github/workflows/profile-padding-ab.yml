@@ -7,6 +7,9 @@ on:
       source_ref:
         type: string
         default: validation/profile-padding-ab
+      runners:
+        type: string
+        default: '["windows-2025","ubuntu-24.04","ubuntu-24.04-arm","macos-15"]'
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-2025, ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        runner: ${{ fromJSON(inputs.runners || '["windows-2025","ubuntu-24.04","ubuntu-24.04-arm","macos-15"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
