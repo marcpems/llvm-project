@@ -122,7 +122,7 @@ def configure_runtime(root, build, tools, llvm_cmake, triple, logs, jobs):
 
 def prepare_helpers(root, tools, work, jobs, supplied_cmake):
     extension = ".exe" if os.name == "nt" else ""
-    names = ["FileCheck", "not", "count"]
+    names = ["FileCheck", "not", "count", "split-file"]
     if os.name == "nt":
         names.append("KillTheDoctor")
     missing = [name for name in names if not (tools / "bin" / (name + extension)).exists()]
@@ -244,6 +244,7 @@ def main():
     parser.add_argument("--tools", type=Path)
     parser.add_argument("--llvm-cmake", type=Path)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--target")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     work = args.work.resolve()
@@ -261,7 +262,7 @@ def main():
     version = subprocess.check_output([str(clang), "--version"], text=True)
     if VERSION not in version:
         raise RuntimeError(f"Expected Clang {VERSION}, found {version}")
-    triple = subprocess.check_output([str(clang), "-print-target-triple"], text=True).strip()
+    triple = args.target or subprocess.check_output([str(clang), "-print-target-triple"], text=True).strip()
     linker = shutil.which("link.exe") if os.name == "nt" else None
     if os.name == "nt" and (not linker or "Visual Studio" not in linker):
         raise RuntimeError(f"Microsoft developer environment is required: {linker}")
