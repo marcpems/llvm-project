@@ -1,0 +1,13 @@
+name: Profile padding compatibility validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: marcpems/llvm-project/.github/workflows/profile-padding-ab.yml@validation/profile-padding-ab
+    with:
+      source_ref: validation/profile-padding-ab
