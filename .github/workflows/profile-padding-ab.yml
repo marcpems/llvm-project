@@ -1,11 +1,6 @@
 name: Profile padding before-after validation
 
 on:
-  push:
-    branches: [validation/profile-padding-ab]
-    paths:
-      - .github/profile-padding/**
-      - .github/workflows/profile-padding-ab.yml
   workflow_dispatch:
   workflow_call:
     inputs:

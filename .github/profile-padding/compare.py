@@ -23,20 +23,20 @@ FILES = [
 VERSION = "23.1.4"
 BUNDLES = {
     ("Windows", "AMD64"): (
-        "clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.zst",
-        "1a3f2f998e230b5791cc4e2bfe11a1f7c07fe42c96ff44f227c9db0bedfaf091",
+        "clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.xz",
+        "854bffcfc84528e0ee92490ff5c178920abd358a79c3e98f053e41e3e8e4c6d2",
     ),
     ("Linux", "x86_64"): (
-        "LLVM-23.1.4-Linux-X64.tar.zst",
-        "efdd1dbd089b99bfcfcde7b8eb1236163f2e88df5a981cca4f783ec9cb5e0378",
+        "LLVM-23.1.4-Linux-X64.tar.xz",
+        "25d814fda50d5fb0084b42be09605d8b1595d49d5e2e03a3345d7e112ff6f9f3",
     ),
     ("Linux", "aarch64"): (
-        "LLVM-23.1.4-Linux-ARM64.tar.zst",
-        "0975f753e0f9b5f83146a7a2f4678bc143e713496b56520716a4de047a63f99f",
+        "LLVM-23.1.4-Linux-ARM64.tar.xz",
+        "9b27cf263d711aa6ebfd4045ab241d947bd09b3cd19ffa5728f48a80c9eb3a91",
     ),
     ("Darwin", "arm64"): (
-        "LLVM-23.1.4-macOS-ARM64.tar.zst",
-        "0f8b0db925ab54a63028d788e85b14abaa25492e9608819728c17f6786948da4",
+        "LLVM-23.1.4-macOS-ARM64.tar.xz",
+        "5d3179db39adeca5b17a34d82708fe976bc60e055b05fe557878fb3fb64d39ef",
     ),
 }
 
@@ -76,7 +76,7 @@ def get_tools(work):
         raise RuntimeError("LLVM release archive checksum mismatch")
     destination = work / "toolchain"
     destination.mkdir()
-    with tarfile.open(archive, "r|zst") as tar:
+    with tarfile.open(archive, "r|xz") as tar:
         for member in tar:
             parts = Path(member.name).parts
             relative = parts[1:]
