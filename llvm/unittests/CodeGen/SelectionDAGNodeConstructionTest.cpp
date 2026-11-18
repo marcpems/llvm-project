@@ -9,6 +9,7 @@
 #include "SelectionDAGTestBase.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/ISDOpcodes.h"
 
 using namespace llvm;
 
@@ -388,6 +389,29 @@ TEST_F(SelectionDAGNodeConstructionTest, CTLS) {
   EXPECT_TRUE(isNullConstant(Ctlsi1));
 }
 
+TEST_F(SelectionDAGNodeConstructionTest, FMAXIMUM_IDENTITY) {
+  SDLoc DL;
+  SDValue FMax =
+      DAG->getIdentityElement(ISD::FMAXIMUM, DL, MVT::f32, SDNodeFlags());
+  EXPECT_TRUE(DAG->isIdentityElement(ISD::FMAXIMUM, SDNodeFlags(), FMax, 0, 0));
+
+  SDValue FMaxNoInf = DAG->getIdentityElement(ISD::FMAXIMUM, DL, MVT::f32,
+                                              SDNodeFlags(SDNodeFlags::NoInfs));
+  EXPECT_TRUE(DAG->isIdentityElement(
+      ISD::FMAXIMUM, SDNodeFlags(SDNodeFlags::NoInfs), FMaxNoInf, 0, 0));
+}
+
+TEST_F(SelectionDAGNodeConstructionTest, FMINIMUM_IDENTITY) {
+  SDLoc DL;
+  SDValue FMin =
+      DAG->getIdentityElement(ISD::FMINIMUM, DL, MVT::f32, SDNodeFlags());
+  EXPECT_TRUE(DAG->isIdentityElement(ISD::FMINIMUM, SDNodeFlags(), FMin, 0, 0));
+
+  SDValue FMinNoInf = DAG->getIdentityElement(ISD::FMINIMUM, DL, MVT::f32,
+                                              SDNodeFlags(SDNodeFlags::NoInfs));
+  EXPECT_TRUE(DAG->isIdentityElement(
+      ISD::FMINIMUM, SDNodeFlags(SDNodeFlags::NoInfs), FMinNoInf, 0, 0));
+}
 TEST_F(SelectionDAGNodeConstructionTest,
        FoldConstantPartialReduceMLASignednessAndInputWidth) {
   SDLoc DL;
@@ -500,4 +524,17 @@ TEST_F(SelectionDAGNodeConstructionTest, ExpandPartialReduceSUMLA) {
   EXPECT_TRUE(Expanded);
   EXPECT_EQ(NumSignExtends, 1u);
   EXPECT_EQ(NumZeroExtends, 1u);
+}
+
+// Verify that a nxv1 vector_repeat gets canonicalised as splat_vector
+TEST_F(SelectionDAGNodeConstructionTest, VectorRepeat) {
+  SDLoc DL;
+  SDValue V1 = DAG->getCopyFromReg(DAG->getEntryNode(), DL,
+                                   Register::index2VirtReg(1), MVT::v1i32);
+  SDValue NXV1 = DAG->getNode(ISD::VECTOR_REPEAT, DL, MVT::nxv1i32, V1);
+
+  ASSERT_EQ(NXV1.getOpcode(), ISD::SPLAT_VECTOR);
+  ASSERT_EQ(NXV1.getOperand(0).getOpcode(), ISD::EXTRACT_VECTOR_ELT);
+  EXPECT_EQ(NXV1.getOperand(0).getOperand(0), V1);
+  EXPECT_TRUE(isNullConstant(NXV1.getOperand(0).getOperand(1)));
 }
