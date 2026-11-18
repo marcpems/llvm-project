@@ -159,6 +159,9 @@ def probe(root, build, tools, triple, logs, linker):
               "-idirafter", resource / "include"]
     if os.name == "nt":
         common.extend(["-fms-runtime-lib=dll", f"--ld-path={linker}"])
+    elif platform.system() == "Linux":
+        # Match the upstream value-merge tests: target addresses must be stable.
+        common.append("-no-pie")
     source = root / ".github/profile-padding/mcdc-values.c"
     flags = ["-O0", "-fprofile-instr-generate", "-fcoverage-mapping", "-fcoverage-mcdc",
              "-mllvm", "-enable-value-profiling"]
