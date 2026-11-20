@@ -1,0 +1,46 @@
+name: Native Windows COFF RVA smoke
+on:
+  push:
+    branches: [validation/coff-rva-native-fast]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.repository == 'marcpems/llvm-project'
+    name: ${{ matrix.arch }} | Microsoft LINK and LLD
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, runner: windows-2025 }
+          - { arch: arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/coff-rva-native
+            compiler-rt/lib/profile
+            compiler-rt/include/profile
+      - name: Compile matching runtime and run native profiles
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $hostArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+          if ($hostArch -ne $env:ARCH) { throw "Expected $env:ARCH host, found $hostArch" }
+          $where = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $where -latest -products '*' -property installationPath
+          $lines = & $env:ComSpec /d /s /c "call `"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=$env:ARCH -host_arch=$env:ARCH >nul && set"
+          if ($LASTEXITCODE) { throw 'VsDevCmd failed' }
+          foreach ($l in $lines) {
+            $k, $v = $l -split '=', 2
+            if ($k -and $null -ne $v) { [Environment]::SetEnvironmentVariable($k, $v, 'Process') }
+          }
+          python .github/coff-rva-native/check.py $env:ARCH
+          exit $LASTEXITCODE
