@@ -1,0 +1,95 @@
+name: COFF profile record pointers A/B
+
+on:
+  push:
+    branches: [validation/coff-profile-record-pointers]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE: f25e7ef948a05e0de2d4ec11843956be6ffdf950
+
+jobs:
+  pin:
+    if: github.repository == 'marcpems/llvm-project'
+    runs-on: ubuntu-24.04
+    outputs:
+      candidate: ${{ steps.pin.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/record-pointers
+          persist-credentials: false
+      - id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(cat .github/record-pointers/candidate.sha)
+          [[ $sha =~ ^[0-9a-f]{40}$ && $sha != "$BASE" ]]
+          compare=$(curl -fsSL "https://api.github.com/repos/marcpems/llvm-project/compare/$BASE...$sha")
+          jq -e --arg base "$BASE" '.status == "ahead" and .merge_base_commit.sha == $base' <<< "$compare" >/dev/null
+          echo "Baseline: $BASE; candidate: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: pin
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-11-arm, arch: arm64}
+          - {runner: windows-2025, arch: x64}
+          - {runner: ubuntu-24.04, arch: x64}
+          - {runner: macos-15, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    env:
+      CANDIDATE: ${{ needs.pin.outputs.candidate }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          sparse-checkout: .github
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: src
+          ref: ${{ env.CANDIDATE }}
+          persist-credentials: false
+          sparse-checkout: |
+            clang
+            llvm
+            libc
+            compiler-rt
+            cmake
+            third-party
+            runtimes
+      - name: Fetch baseline in the same source tree
+        run: git -C src fetch --depth=1 --filter=blob:none origin ${{ env.BASE }}
+      - name: Build and compare on Unix
+        if: runner.os != 'Windows'
+        run: python3 harness/.github/record-pointers/validate.py
+      - name: Build and compare in native Visual Studio environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          if (!$vs) { throw 'Visual Studio not found' }
+          $dev = & $env:ComSpec /d /s /c "call `"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=$env:ARCH -host_arch=$env:ARCH >nul && set"
+          if ($LASTEXITCODE) { throw 'VsDevCmd failed' }
+          foreach ($line in $dev) {
+            $k, $v = $line -split '=', 2
+            if ($k -and $null -ne $v) { [Environment]::SetEnvironmentVariable($k, $v, 'Process') }
+          }
+          python harness\.github\record-pointers\validate.py
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: record-pointers-${{ matrix.runner }}-${{ github.run_attempt }}
+          path: results
+          retention-days: 14
