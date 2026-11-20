@@ -1,4 +1,5 @@
 """No toolchain build/download. Only compile the matching profile runtime."""
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -30,7 +31,12 @@ def llvm_toolchain():
     candidates = []
     for b in bins:
         if all((b/n).is_file() for n in ("clang.exe","llvm-profdata.exe","lld-link.exe")):
-            version = run([b/"clang.exe","--version"])
+            try:
+                version = run([b/"clang.exe","--version"])
+            except OSError as e:
+                if e.winerror in (193, 216):
+                    continue  # VS also ships LLVM for other host architectures.
+                raise
             print(b,version.splitlines()[0],flush=True)
             candidates.append((tuple(map(int,re.search(r"clang version (\d+)\.(\d+)\.(\d+)",version).groups())),str(b)))
     if not candidates:
@@ -42,6 +48,34 @@ clang = tools/"clang.exe"
 profdata = tools/"llvm-profdata.exe"
 flags = [f"--target={target}-pc-windows-msvc", "-fms-runtime-lib=dll"]
 print("reader:",run([profdata,"--version"]).strip(),flush=True)
+
+def check_fixture_raw(raw):
+    # This fixture has two records and one single-target IC site, not vtables
+    # or uniform counters. Check v11 in place; never rewrite a version field.
+    b = raw.read_bytes()
+    header = struct.Struct("<19Q")
+    record = struct.Struct("<7QI4HI")
+    h = header.unpack_from(b)
+    assert h[0] == 0xff6c70726f667281 and h[1] == 11 and h[3] == 2
+    assert record.size == 72 and h[9] == h[16] == h[17] == 0
+    begin = header.size + h[2]
+    counters = begin + h[3] * record.size + h[4]
+    expected = {"callee":(6,3), "caller":(3,6)}
+    by_hash = {int.from_bytes(hashlib.md5(n.encode()).digest()[:8],"little"):n for n in expected}
+    counts, addresses = {}, {}
+    for i in range(h[3]):
+        r = record.unpack_from(b, begin + i*record.size)
+        name = by_hash[r[0]]
+        offset = (r[2] - h[13] + i*record.size) & 0xffffffff
+        assert r[7] == 2 and offset + 16 <= h[5]*8
+        assert r[8:11] == ((1,0,0) if name == "caller" else (0,0,0))
+        counts[name] = struct.unpack_from("<2Q", b, counters + offset)
+        addresses[name] = r[5]
+    assert counts == expected, counts
+    names = counters + h[5]*8 + h[6] + h[7] + h[8] + h[10]
+    vp = names + ((h[12]+7)//8)*8
+    assert vp+40 == len(b)
+    assert struct.unpack_from("<IIIIB7xQQ", b,vp) == (40,1,0,1,1,addresses["callee"],6)
 names = ["InstrProfiling", "InstrProfilingInternal", "InstrProfilingBuffer", "InstrProfilingMerge",
          "InstrProfilingMergeFile", "InstrProfilingNameVar", "InstrProfilingVersionVar", "InstrProfilingWriter",
          "InstrProfilingPlatformWindows", "InstrProfilingFile", "InstrProfilingUtil", "InstrProfilingValue", "WindowsMMap"]
@@ -74,7 +108,16 @@ for shape in ("dense","sparse"):
         output = run([exe],env={**os.environ,"LLVM_PROFILE_FILE":str(work/(stem+"-%m.profraw"))})
         assert "LLVM Profile Error" not in output, output
         raw, = work.glob(stem+"-*.profraw")
-        report = run([profdata,"show","--all-functions","--counts","--ic-targets",raw])
+        check_fixture_raw(raw)
+        try:
+            report = run([profdata,"show","--all-functions","--counts","--ic-targets",raw])
+        except RuntimeError as err:
+            if not re.search(r"raw profile format version = 11; expected version = (?:\d|10)\b", str(err)):
+                raise
+            print(f"PASS: {stem} exact v11 raw counts and IC target; installed reader too old. "
+                  "Preserving original bytes for independent llvm-profdata verification.", flush=True)
+            print(str(err),flush=True)
+            continue
         print(report,flush=True)
         rows = re.findall(r"^  (\S+):\n    Hash: .*\n    Counters: \d+\n    Function count: (\d+)\n    Indirect Call Site Count: (\d+)\n    Block counts: \[(.*?)\]",report,re.M)
         assert sorted(rows) == [("callee","6","0","3"),("caller","3","1","6")], rows

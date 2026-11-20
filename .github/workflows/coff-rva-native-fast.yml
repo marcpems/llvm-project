@@ -44,3 +44,9 @@ jobs:
           }
           python .github/coff-rva-native/check.py $env:ARCH
           exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: raw-${{ matrix.arch }}
+          path: native-smoke-${{ matrix.arch }}/*.profraw
+          if-no-files-found: error
+          retention-days: 7
