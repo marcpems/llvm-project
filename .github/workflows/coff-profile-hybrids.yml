@@ -31,6 +31,14 @@ jobs:
             compiler-rt/include
             compiler-rt/lib/profile
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: be719854d4e4acff4a8752bbd0a5f2bec76e84d7
+          path: fixed
+          sparse-checkout: |
+            compiler-rt/include
+            compiler-rt/lib/profile
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'

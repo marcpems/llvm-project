@@ -5,11 +5,11 @@ import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import subprocess
 
 BASE = "f25e7ef948a05e0de2d4ec11843956be6ffdf950"
 CANDIDATE = "aaf1bc5225963d48fb9658023185ddc8243046ea"
+FIXED = "be719854d4e4acff4a8752bbd0a5f2bec76e84d7"
 HERE = Path(__file__).resolve().parent
 ROOT = Path.cwd()
 WORK = ROOT / "work"
@@ -20,7 +20,7 @@ SDK = Path(os.environ["WindowsSdkDir"]) / "Lib" / os.environ["WindowsSDKLibVersi
 LINK = VC / "bin/Hostarm64/arm64/link.exe"
 MARKER = "__llvm_profile_record_rvas_v2"
 TRIPLES = dict(native="aarch64", ec="arm64ec", x64="x86_64")
-report = {"candidate": CANDIDATE, "base": BASE, "fixtures": {}, "archives": {}, "rows": []}
+report = {"candidate": CANDIDATE, "fixed": FIXED, "base": BASE, "fixtures": {}, "archives": {}, "rows": []}
 
 
 def save():
@@ -63,17 +63,6 @@ def runtime(repo, phase, arch):
         raise RuntimeError(f"Unexpected Windows profile source inventory: {sources}")
     out = WORK / f"{phase}-{arch}-rt"
     out.mkdir()
-    if phase == "prototype":
-        overlay = out / "profile"
-        shutil.copytree(src, overlay)
-        h = overlay / "InstrProfilingInternal.h"
-        old = " && !defined(_M_ARM64EC)"
-        text = h.read_text()
-        if text.count(old) != 1:
-            raise RuntimeError("Unexpected reader guard")
-        h.write_text(text.replace(old, ""))
-        src = overlay
-
     def build(n):
         run([TOOLS / "clang-cl.exe", f"--target={TRIPLES[arch]}-pc-windows-msvc", "/nologo", "/c",
              "/DWIN32", "/D_WINDOWS", "/O2", "/Ob2", "/DNDEBUG", "/MT", "-fno-lto",
@@ -131,16 +120,14 @@ def main():
         run([*clang(arch), "-O2", "-c", HERE / "host.c", "-o", f"host-{arch}.obj"])
         run([LINK, "/nologo", f"/out:host-{arch}.exe", f"host-{arch}.obj", "kernel32.lib", "libcmt.lib", "oldnames.lib"],
             env=libs(arch))
-    for phase in ("base", "candidate", "prototype"):
-        gen = "candidate" if phase == "prototype" else phase
-        rev = CANDIDATE if gen == "candidate" else BASE
-        repo = ROOT / gen
+    for phase, rev in (("base", BASE), ("candidate", CANDIDATE), ("fixed", FIXED)):
+        gen = "candidate" if phase == "fixed" else phase
+        repo = ROOT / phase
         if run(["git", "-C", repo, "rev-parse", "HEAD"]).stdout.strip() != rev:
             raise RuntimeError("Wrong runtime source")
         run(["git", "-C", repo, "diff", "--quiet", rev, "--", "compiler-rt"])
         ec = runtime(repo, phase, "ec")
-        if phase != "prototype":
-            native = runtime(repo, phase, "native")
+        native = runtime(repo, phase, "native")
         for linker, ld in (("LINK", LINK), ("LLD", TOOLS / "lld-link.exe")):
             tag = f"{phase}-{linker}"
             common = [ld, "/nologo", "/incremental:no", "/opt:ref,icf", "/nodefaultlib:clang_rt.profile.lib",

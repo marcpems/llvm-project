@@ -1,4 +1,5 @@
 import hashlib
+from compression import zstd
 import tarfile
 from pathlib import Path
 import subprocess
@@ -10,7 +11,8 @@ subprocess.run(["curl.exe", "-fsSL", "--retry", "3", "-o", archive,
 with archive.open("rb") as f:
     if hashlib.file_digest(f, "sha256").hexdigest() != "6a1f1a4eaa18c6b83d0c61c85813664143643fa7df3c11f49750773d560a2164":
         raise RuntimeError("LLVM release archive checksum mismatch")
-with tarfile.open(archive, "r|zst") as tar:
+with zstd.open(archive, "rb", options={zstd.DecompressionParameter.window_log_max: 30}) as stream, \
+        tarfile.open(fileobj=stream, mode="r|") as tar:
     for member in tar:
         p = Path(member.name)
         parts = p.parts[1:]

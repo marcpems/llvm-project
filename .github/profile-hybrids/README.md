@@ -17,9 +17,9 @@ were normalized. EC lowering is identical and therefore stored once.
 * **Mixed EXE:** link an EC caller with an ordinary x64 leaf. The baseline
   must link, run and decode `main=1` and `leaf=3` under both linkers. Published
   candidate objects must fail to link specifically for the missing v2 ABI
-  marker. A separately labeled reader-only prototype removes the EC
-  exclusion in a private copy of the candidate runtime header; the same
-  candidate objects must then link and produce the expected profile.
+  marker. The reader-only fix at `be719854d4e4acff4a8752bbd0a5f2bec76e84d7`
+  uses the same candidate objects (its emitter change is comments only) and
+  unmodified runtimes from that commit. It must link and reproduce baseline counts.
 * **Arm64X DLL:** combine genuine native and EC objects and their per-view
   runtimes. Native and x64 processes load the same DLL, select distinct exports,
   serialize a buffer, and emit a raw profile. Validate dispatch count 7, target
