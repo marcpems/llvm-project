@@ -1,0 +1,61 @@
+name: COFF Arm64EC and Arm64X profile replay
+on:
+  push:
+    branches: [validation/coff-profile-hybrids]
+permissions:
+  contents: read
+jobs:
+  replay:
+    if: github.repository == 'marcpems/llvm-project'
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          sparse-checkout: .github/profile-hybrids
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f25e7ef948a05e0de2d4ec11843956be6ffdf950
+          path: base
+          sparse-checkout: |
+            compiler-rt/include
+            compiler-rt/lib/profile
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: aaf1bc5225963d48fb9658023185ddc8243046ea
+          path: candidate
+          sparse-checkout: |
+            compiler-rt/include
+            compiler-rt/lib/profile
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Fetch and verify LLVM 23.1.4 Arm64 backend, LLD and readers
+        run: python harness/.github/profile-hybrids/tools.py
+      - name: Compile exact-revision runtimes and run hybrid images
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          if (!$vs) { throw 'Visual Studio not found' }
+          $vars = & $env:ComSpec /d /s /c "call `"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=arm64 -host_arch=arm64 >nul && set"
+          if ($LASTEXITCODE) { throw 'VsDevCmd failed' }
+          foreach ($line in $vars) {
+            $k, $v = $line -split '=', 2
+            if ($k -and $null -ne $v) { [Environment]::SetEnvironmentVariable($k, $v, 'Process') }
+          }
+          $cc = @(Get-ChildItem release\*\bin\clang.exe)
+          if ($cc.Count -ne 1) { throw 'Unexpected LLVM release archive layout' }
+          $env:LLVM_TOOLS = $cc[0].Directory.FullName
+          python harness/.github/profile-hybrids/validate.py
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hybrid-replay-${{ github.run_attempt }}
+          path: results
+          retention-days: 14
