@@ -217,7 +217,9 @@ def probe(cc, profdata, cov, rt, triple, linker, ldflag, out, bench, phase, read
         sections = text(readobj, "--sections", obj)
         (out / "object-sections.txt").write_text(sections)
         expected = phase == "candidate"
-        for section in (".lprfp$M", ".lprfd$0"):
+        if ".lprfp$M" in sections:
+            raise RuntimeError("Unexpected v1 pointer slots in the compact-ABI comparison")
+        for section in (".lprfr$M", ".lprfd$0"):
             if (section in sections) != expected:
                 raise RuntimeError(f"Unexpected {phase} COFF layout for {section}")
     provenance.update(object_bytes=obj.stat().st_size, exe_bytes=executable.stat().st_size)
