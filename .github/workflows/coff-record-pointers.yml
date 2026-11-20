@@ -29,8 +29,9 @@ jobs:
           set -euo pipefail
           sha=$(cat .github/record-pointers/candidate.sha)
           [[ $sha =~ ^[0-9a-f]{40}$ && $sha != "$BASE" ]]
-          compare=$(curl -fsSL "https://api.github.com/repos/marcpems/llvm-project/compare/$BASE...$sha")
-          jq -e --arg base "$BASE" '.status == "ahead" and .merge_base_commit.sha == $base' <<< "$compare" >/dev/null
+          # Fetch only commit/tree metadata, not LLVM's worktree or blobs.
+          git fetch --no-tags --depth=100 --filter=tree:0 origin "$sha"
+          git merge-base --is-ancestor "$BASE" "$sha"
           echo "Baseline: $BASE; candidate: $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           lanes=$(python3 .github/record-pointers/lanes.py)
