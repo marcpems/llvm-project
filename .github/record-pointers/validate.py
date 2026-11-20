@@ -32,6 +32,11 @@ def digest(path):
 
 def build_compiler(src, build, jobs):
     cc, cxx = ("cl", "cl") if WINDOWS else ("clang", "clang++")
+    arm64_bootstrap = WINDOWS and os.environ.get("ARCH") == "arm64"
+    if arm64_bootstrap:
+        # Native MSVC 14.52 ICEs on baseline clang/lib/Analysis/Consumed.cpp.
+        cc = cxx = shutil.which("clang-cl.exe") or str(Path(os.environ["ProgramFiles"]) / "LLVM/bin/clang-cl.exe")
+        print(text(cc, "--version"), flush=True)
     release = "/O1 /DNDEBUG" if WINDOWS else "-O1 -g0 -DNDEBUG"
     args = [
         "cmake", "-S", src / "llvm", "-B", build, "-G", "Ninja",
@@ -45,6 +50,10 @@ def build_compiler(src, build, jobs):
     ]
     if DARWIN:
         args.append(f"-DDEFAULT_SYSROOT={text('xcrun', '--show-sdk-path')}")
+    if arm64_bootstrap:
+        triple = "aarch64-pc-windows-msvc"
+        args += [f"-DCMAKE_C_COMPILER_TARGET={triple}", f"-DCMAKE_CXX_COMPILER_TARGET={triple}",
+                 f"-DLLVM_HOST_TRIPLE={triple}"]
     subprocess.run(args, check=True)
     targets = ["clang", "clang-resource-headers", "opt", "llvm-config", "FileCheck",
                "not", "count", "split-file", "llvm-profdata", "llvm-readobj", "llvm-cov"]
