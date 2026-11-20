@@ -8,6 +8,13 @@ revision, which must descend from `f25e7ef948a05e0de2d4ec11843956be6ffdf950`.
 To compare a later candidate, change only `candidate.sha` and push again.
 No default-branch workflow, secrets, or write token are required.
 
+The default is all four full builds. To avoid repeating healthy jobs, a
+validation commit can select lanes using a trailer, for example
+`CI-Lanes: ubuntu-24.04,macos-15:runtime`. `:runtime` is an additional
+non-Windows control: it uses the checksum-verified LLVM 23.1.4 release tools
+with a separately built runtime from each exact revision. It is not evidence
+of a source-matched compiler or a substitute for the full build.
+
 Each native Windows Arm64/x64, Linux x64 and macOS Arm64 job builds only the
 host backend, Clang and the selected LLVM tools. It reuses the Ninja directory
 for the candidate and builds a separate profile runtime with each Clang.
@@ -20,6 +27,12 @@ file; independent runs merged with `llvm-profdata` must produce the same
 counts and bitmap. Windows uses both Microsoft LINK and LLD; Linux uses
 BFD and LLD; macOS uses the SDK's native linker. The actual driver
 invocation is checked, not inferred from a flag.
+
+Executable `llvm-cov export` records stdout, stderr and status independently
+of the raw profile oracle. A matched pair of Microsoft LINK “symbol name is
+empty” errors is explicitly recorded as the separate coverage-reader issue.
+Windows also checks the executable's profile against its input object's MC/DC
+mapping, avoiding PE section-tail padding on that separate check.
 
 `paired-*.json` contains ten interleaved candidate/baseline samples on the
 same runner and linker: instrumented hot-loop time, serialization into a

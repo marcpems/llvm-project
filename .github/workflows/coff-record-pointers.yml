@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       candidate: ${{ steps.pin.outputs.sha }}
+      lanes: ${{ steps.pin.outputs.lanes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,22 +33,21 @@ jobs:
           jq -e --arg base "$BASE" '.status == "ahead" and .merge_base_commit.sha == $base' <<< "$compare" >/dev/null
           echo "Baseline: $BASE; candidate: $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          lanes=$(python3 .github/record-pointers/lanes.py)
+          echo "lanes=$lanes" >> "$GITHUB_OUTPUT"
 
   validate:
     needs: pin
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {runner: windows-11-arm, arch: arm64}
-          - {runner: windows-2025, arch: x64}
-          - {runner: ubuntu-24.04, arch: x64}
-          - {runner: macos-15, arch: arm64}
+        include: ${{ fromJSON(needs.pin.outputs.lanes) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
+    timeout-minutes: ${{ matrix.mode == 'runtime' && 90 || 360 }}
     env:
       CANDIDATE: ${{ needs.pin.outputs.candidate }}
       ARCH: ${{ matrix.arch }}
+      VALIDATION_MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +69,14 @@ jobs:
             runtimes
       - name: Fetch baseline in the same source tree
         run: git -C src fetch --depth=1 --filter=blob:none origin ${{ env.BASE }}
+      - name: Install system LLD if not on PATH
+        if: runner.os == 'Linux' && matrix.mode == 'full'
+        shell: bash
+        run: |
+          if ! command -v ld.lld; then
+            sudo apt-get -qq update
+            sudo apt-get -y --no-install-recommends install lld
+          fi
       - name: Build and compare on Unix
         if: runner.os != 'Windows'
         run: python3 harness/.github/record-pointers/validate.py
@@ -90,6 +98,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: record-pointers-${{ matrix.runner }}-${{ github.run_attempt }}
+          name: record-pointers-${{ matrix.runner }}-${{ matrix.mode }}-${{ github.run_attempt }}
           path: results
           retention-days: 14

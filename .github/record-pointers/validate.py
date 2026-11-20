@@ -11,7 +11,7 @@ import traceback
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "profile-padding"))
-from compare import configure_runtime, run
+from compare import VERSION, configure_runtime, get_tools, prepare_helpers, run
 
 WINDOWS = os.name == "nt"
 DARWIN = sys.platform == "darwin"
@@ -40,7 +40,7 @@ def build_compiler(src, build, jobs):
         "-DLLVM_ENABLE_PROJECTS=clang", "-DLLVM_TARGETS_TO_BUILD=Native",
         "-DLLVM_PARALLEL_LINK_JOBS=1", "-DLLVM_INCLUDE_BENCHMARKS=OFF",
         "-DLLVM_ENABLE_ZSTD=OFF", "-DLLVM_ENABLE_LIBXML2=OFF", "-DLLVM_ENABLE_ZLIB=OFF",
-        "-DCLANG_INCLUDE_TESTS=OFF", "-DCLANG_ENABLE_STATIC_ANALYZER=OFF",
+        "-DCLANG_INCLUDE_TESTS=OFF", "-DCLANG_ENABLE_STATIC_ANALYZER=OFF", "-DCLANG_ENABLE_CIR=OFF",
         "-DLLVM_OMIT_EXPORTS_FROM_CONFIG=ON", f"-DPython3_EXECUTABLE={sys.executable}",
     ]
     if DARWIN:
@@ -177,6 +177,15 @@ def probe(cc, profdata, cov, rt, triple, linker, ldflag, out, bench, phase, read
     indexed = out / "runtime.profdata"
     if not re.search(r"Function count:\s*2\b", text(profdata, "show", "--function=main", indexed)):
         raise RuntimeError("Expected main to execute twice")
+    with (out / "binary-export.json").open("w") as export, (out / "binary-export.stderr").open("w") as err:
+        export_code = subprocess.run([cov, "export", binary, f"-instr-profile={indexed}"],
+                                     stdout=export, stderr=err).returncode
+    diagnostic = (out / "binary-export.stderr").read_text(errors="replace")
+    export_status = ("passed" if export_code == 0 else
+                     "known COFF coverage reader: empty name" if WINDOWS and linker == "LINK"
+                     and "symbol name is empty" in diagnostic else "unexpected failure")
+    (out / "export-status.json").write_text(json.dumps({"exit": export_code, "status": export_status}))
+    print(f"{phase} {linker}: executable llvm-cov export: {export_status}", flush=True)
     # PE section end padding in some LINK versions also affects the unrelated
     # coverage-mapping reader. Decode the same mapping from its input object.
     coverage = text(cov, "show", obj if WINDOWS else binary, f"-instr-profile={indexed}", "--show-mcdc", src)
@@ -191,6 +200,13 @@ def probe(cc, profdata, cov, rt, triple, linker, ldflag, out, bench, phase, read
         expected = (out / f"offline-{i}.log").read_text().splitlines()[-1]
         if text(optimized, *argv) != expected:
             raise RuntimeError("Profile-use binary output changed")
+    provenance = {
+        "compiler_sha256": digest(cc), "runtime": str(selected[0]),
+        "runtime_sha256": digest(selected[0]), "linker_command": line,
+    }
+    if bench is None:
+        (out / "provenance.json").write_text(json.dumps(provenance, indent=2))
+        return
     obj = out / "bench.o"
     executable = out / ("bench" + EXE)
     run([cc, *common, "-O2", "-fprofile-instr-generate", "-c", bench, "-o", obj],
@@ -204,11 +220,15 @@ def probe(cc, profdata, cov, rt, triple, linker, ldflag, out, bench, phase, read
         for section in (".lprfp$M", ".lprfd$0"):
             if (section in sections) != expected:
                 raise RuntimeError(f"Unexpected {phase} COFF layout for {section}")
-    (out / "provenance.json").write_text(json.dumps({
-        "compiler_sha256": digest(cc), "runtime": str(selected[0]),
-        "runtime_sha256": digest(selected[0]), "linker_command": line,
-        "object_bytes": obj.stat().st_size, "exe_bytes": executable.stat().st_size,
-    }, indent=2))
+    provenance.update(object_bytes=obj.stat().st_size, exe_bytes=executable.stat().st_size)
+    (out / "provenance.json").write_text(json.dumps(provenance, indent=2))
+
+
+def compare_exports(out, linker):
+    states = [json.loads((out / phase / linker / "export-status.json").read_text())["status"]
+              for phase in ("base", "candidate")]
+    if "unexpected failure" in states or (states[0] == "passed" and states[1] != "passed"):
+        raise RuntimeError(f"Executable coverage-export discrepancy for {linker}: {states}")
 
 
 def main():
@@ -223,11 +243,28 @@ def main():
     if WINDOWS:
         git_usr = Path(os.environ["ProgramFiles"]) / "Git/usr/bin"
         os.environ["PATH"] += os.pathsep + str(git_usr)
+    if DARWIN:
+        os.environ["SDKROOT"] = text("xcrun", "--show-sdk-path")
+    quick = os.environ.get("VALIDATION_MODE") == "runtime"
+    if quick:
+        if WINDOWS:
+            raise RuntimeError("The fixed release compiler is only a non-Windows control")
+        cache = Path("release-tools").resolve()
+        cache.mkdir()
+        tools = get_tools(cache)
+        os.environ["PATH"] = str(tools / "bin") + os.pathsep + os.environ["PATH"]
+        cc = tools / "bin/clang"
+        if f"clang version {VERSION}" not in text(cc, "--version"):
+            raise RuntimeError("Unexpected release compiler identity")
+        llvm_cmake = prepare_helpers(src, tools, cache, jobs, None)
+    else:
+        llvm_cmake = tools / "lib/cmake/llvm"
     changes = [Path(p) for p in text("git", "-C", src, "diff", "--diff-filter=AMR",
                                      "--name-only", base, candidate).splitlines()]
     drivers = linkers()
-    bench = out / "bench.c"
-    subprocess.run([sys.executable, HERE / "paired.py", "generate", bench], check=True)
+    bench = None if quick else out / "bench.c"
+    if bench:
+        subprocess.run([sys.executable, HERE / "paired.py", "generate", bench], check=True)
     failures = []
 
     def check(label, fn, *args):
@@ -248,7 +285,8 @@ def main():
             raise RuntimeError("Source revision mismatch")
         print(f"{phase}: {rev}, {shutil.disk_usage(src).free // 2**30} GiB free", flush=True)
         (logs / "source.txt").write_text(rev + "\n")
-        build_compiler(src, tools, jobs)
+        if not quick:
+            build_compiler(src, tools, jobs)
         cc = tools / "bin" / ("clang" + EXE)
         triple = text(cc, "-print-target-triple")
         arch = os.environ["ARCH"]
@@ -256,9 +294,10 @@ def main():
         if triple.split("-")[0].lower() not in allowed or platform.machine().lower() not in allowed:
             raise RuntimeError(f"Not native {arch}: {triple}, host {platform.machine()}")
         (logs / "clang-version.txt").write_text(text(cc, "--version"))
-        check(f"{phase} LLVM lit", llvm_lit, src, tools, logs, changes)
+        if not quick:
+            check(f"{phase} LLVM lit", llvm_lit, src, tools, logs, changes)
         rt = Path("rt-" + phase).resolve()
-        configure_runtime(src, rt, tools, tools / "lib/cmake/llvm", triple, logs, jobs)
+        configure_runtime(src, rt, tools, llvm_cmake, triple, logs, jobs)
         for linker, ldflag in drivers.items():
             directory = logs / linker
             directory.mkdir()
@@ -267,9 +306,11 @@ def main():
                   tools / "bin" / ("llvm-cov" + EXE), rt, triple, linker, ldflag, directory, bench,
                   phase, tools / "bin" / ("llvm-readobj" + EXE))
     for linker in drivers:
-        check(f"{linker} paired measurements", subprocess.check_call,
-              [sys.executable, HERE / "paired.py", "compare", out / "base" / linker / ("bench" + EXE),
-               out / "candidate" / linker / ("bench" + EXE), out / f"paired-{linker}.json"])
+        check(f"{linker} executable export", compare_exports, out, linker)
+        if not quick:
+            check(f"{linker} paired measurements", subprocess.check_call,
+                  [sys.executable, HERE / "paired.py", "compare", out / "base" / linker / ("bench" + EXE),
+                   out / "candidate" / linker / ("bench" + EXE), out / f"paired-{linker}.json"])
     if failures:
         raise SystemExit("Failed: " + ", ".join(failures))
 
