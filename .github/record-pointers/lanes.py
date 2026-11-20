@@ -9,9 +9,10 @@ lanes = []
 for spec in (requested.split(",") if requested else arches):
     runner, _, mode = spec.strip().partition(":")
     mode = mode or "full"
-    if runner not in arches or mode not in ("full", "runtime") or mode == "runtime" and runner.startswith("windows"):
+    intel_control = runner == "macos-15-intel" and mode == "runtime"
+    if (runner not in arches and not intel_control) or mode not in ("full", "runtime") or mode == "runtime" and runner.startswith("windows"):
         raise ValueError(f"Unknown CI lane: {spec}")
-    lane = {"runner": runner, "arch": arches[runner], "mode": mode}
+    lane = {"runner": runner, "arch": "x64" if intel_control else arches[runner], "mode": mode}
     if lane in lanes:
         raise ValueError(f"Duplicate CI lane: {spec}")
     lanes.append(lane)

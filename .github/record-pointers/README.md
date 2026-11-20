@@ -15,6 +15,11 @@ non-Windows control: it uses the checksum-verified LLVM 23.1.4 release tools
 with a separately built runtime from each exact revision. It is not evidence
 of a source-matched compiler or a substitute for the full build.
 
+An optional `macos-15-intel:runtime` lane uses conda-forge's native Intel
+Clang/LLVM 23.1.4 binaries: upstream publishes only Arm64 macOS archives.
+The installed package URLs and compiler/runtime hashes are retained. The
+Intel lane never runs a full build and does not change the default matrix.
+
 Each native Windows Arm64/x64, Linux x64 and macOS Arm64 job builds only the
 host backend, Clang and the selected LLVM tools. It reuses the Ninja directory
 for the candidate and builds a separate profile runtime with each Clang.

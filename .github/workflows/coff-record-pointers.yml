@@ -70,6 +70,29 @@ jobs:
             runtimes
       - name: Fetch baseline in the same source tree
         run: git -C src fetch --depth=1 --filter=blob:none origin ${{ env.BASE }}
+      - name: Install native Intel LLVM 23.1.4 packages
+        id: intel
+        if: matrix.runner == 'macos-15-intel'
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3
+        with:
+          environment-name: llvm-control
+          create-args: >-
+            -c conda-forge
+            clang=23.1.4=default_nocfg*
+            clangxx=23.1.4=default_nocfg*
+            llvm-tools=23.1.4
+            llvmdev=23.1.4
+          generate-run-shell: false
+      - name: Record actual Intel binary package provenance
+        if: matrix.runner == 'macos-15-intel'
+        shell: bash
+        env:
+          PREFIX: ${{ steps.intel.outputs.environment-path }}
+        run: |
+          test -x "$PREFIX/bin/clang"
+          mkdir -p results
+          micromamba list -p "$PREFIX" --explicit > results/intel-packages.txt
+          echo "RELEASE_TOOLCHAIN_DIR=$PREFIX" >> "$GITHUB_ENV"
       - name: Install system LLD if not on PATH
         if: runner.os == 'Linux' && matrix.mode == 'full'
         shell: bash

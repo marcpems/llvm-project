@@ -92,7 +92,8 @@ def profile_lit(src, tools, rt, out, changes, ldflag):
     wrapper.mkdir()
     sites = list((rt / "test/profile").glob("*/lit.site.cfg.py"))
     if DARWIN:
-        sites = [p for p in sites if p.parent.name in ("Profile-arm64", "Profile-aarch64")]
+        native_sites = ("Profile-x86_64",) if platform.machine() == "x86_64" else ("Profile-arm64", "Profile-aarch64")
+        sites = [p for p in sites if p.parent.name in native_sites]
     site, = sites
     has_external_lld = WINDOWS and bool(shutil.which("lld-link.exe"))
     lld_config = "config.has_lld = True\n" if has_external_lld else ""
@@ -237,7 +238,7 @@ def main():
     src = Path("src").resolve()
     tools = Path("b").resolve()
     out = Path("results").resolve()
-    out.mkdir()
+    out.mkdir(exist_ok=True)
     base, candidate = os.environ["BASE"], os.environ["CANDIDATE"]
     jobs = min(4, os.cpu_count() or 2)
     if DARWIN:
@@ -253,7 +254,8 @@ def main():
             raise RuntimeError("The fixed release compiler is only a non-Windows control")
         cache = Path("release-tools").resolve()
         cache.mkdir()
-        tools = get_tools(cache)
+        packaged = os.environ.get("RELEASE_TOOLCHAIN_DIR")
+        tools = Path(packaged).resolve() if packaged else get_tools(cache)
         os.environ["PATH"] = str(tools / "bin") + os.pathsep + os.environ["PATH"]
         cc = tools / "bin/clang"
         if f"clang version {VERSION}" not in text(cc, "--version"):
